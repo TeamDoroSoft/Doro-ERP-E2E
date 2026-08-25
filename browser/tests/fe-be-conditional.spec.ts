@@ -358,13 +358,15 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
 
-  if (!provisioningAvailable(env)) {
+  const { roleOwner, roleManager, roleStaff } = env.staticAccounts
+  const hasStaticRoleAccounts = roleOwner !== null && roleManager !== null && roleStaff !== null
+  if (!provisioningAvailable(env) && !hasStaticRoleAccounts) {
     record({
       testCaseId: 'FE-BE-014',
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: 'Provisioning 자격증명 없음 — OWNER/MANAGER/STAFF Fixture 생성 불가',
+      errorClass: 'Provisioning 자격증명도 AUTH_ROLE_OWNER_01/MANAGER_01/STAFF_01 정적 계정도 없음 — OWNER/MANAGER/STAFF Fixture 준비 불가',
     })
     return
   }

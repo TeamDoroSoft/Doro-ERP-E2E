@@ -16,6 +16,17 @@ function requireHttps(name, value) {
   return value.replace(/\/$/, '')
 }
 
+// Provisioning API 대신 미리 만들어둔 전용 계정 6개 — Docs/Specifications/운영·배포/
+// "배포 검증용 테스트 계정 요청.md" 참고. 하나라도 env에 없으면 null — 호출부는 Provisioning
+// 경로로 자연스럽게 폴백한다. browser/lib/env.ts의 같은 필드와 대응된다.
+function optionalAccount(prefix) {
+  const tenantCode = __ENV[`DORO_${prefix}_TENANT_CODE`]
+  const loginId = __ENV[`DORO_${prefix}_LOGIN_ID`]
+  const password = __ENV[`DORO_${prefix}_PASSWORD`]
+  if (!tenantCode || !loginId || !password) return null
+  return { tenantCode, loginId, password }
+}
+
 function defaultRunId() {
   const now = new Date()
   const stamp = now
@@ -49,6 +60,14 @@ export function loadDeployEnv() {
       origin: __ENV.PROVISIONING_ORIGIN || null,
       username: __ENV.STORE_ACCESS_PROVISIONING_USERNAME || null,
       password: __ENV.STORE_ACCESS_PROVISIONING_PASSWORD || null,
+    },
+    staticAccounts: {
+      lockout: optionalAccount('AUTH_LOCKOUT_01'),
+      inactiveEmployee: optionalAccount('AUTH_INACTIVE_EMPLOYEE_01'),
+      inactiveTenant: optionalAccount('AUTH_INACTIVE_TENANT_01'),
+      roleOwner: optionalAccount('AUTH_ROLE_OWNER_01'),
+      roleManager: optionalAccount('AUTH_ROLE_MANAGER_01'),
+      roleStaff: optionalAccount('AUTH_ROLE_STAFF_01'),
     },
   }
 }

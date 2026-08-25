@@ -23,7 +23,17 @@ export interface RoleFixtures {
 // FE-BE-014 전용 — OWNER/MANAGER/STAFF 세 계정을 전부 "비밀번호 변경 완료" 상태까지 준비해서
 // 돌려준다. 실제 화면 검증(Playwright page)은 호출부가 하고, 이 함수는 그 전에 필요한 계정
 // 준비만 Node fetch로 직접 한다.
+//
+// AUTH_ROLE_OWNER_01/MANAGER_01/STAFF_01 정적 계정이 전부 있으면 그걸 그대로 쓴다 — Provisioning
+// API 없이도(또는 실 배포처럼 그게 아예 안 닿는 환경에서도) 이 케이스를 돌릴 수 있게 하기 위함
+// (Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md" 참고). 셋 중 하나라도 없으면
+// 기존처럼 1회용 Fixture를 Provisioning으로 만든다.
 export async function setupRoleFixtures(env: DeployEnv): Promise<RoleFixtures> {
+  const { roleOwner, roleManager, roleStaff } = env.staticAccounts
+  if (roleOwner && roleManager && roleStaff) {
+    return { owner: roleOwner, manager: roleManager, staff: roleStaff }
+  }
+
   const tenantCode = `e2e-role-${randomToken().slice(0, 10)}`
 
   const ownerTemp = randomPassword('Fixture014Temp')

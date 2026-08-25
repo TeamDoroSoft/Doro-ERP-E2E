@@ -17,6 +17,18 @@ export interface ProvisioningConfig {
   password: string | null
 }
 
+// Provisioning API 대신 미리 만들어둔 전용 계정 6개 — Docs/Specifications/운영·배포/
+// "배포 검증용 테스트 계정 요청.md"에 정확한 요구사항을 정리해뒀다. 하나라도 env에 없으면
+// null — 호출부는 Provisioning 경로로 자연스럽게 폴백한다(있으면 정적 계정을 우선한다).
+export interface StaticAccounts {
+  lockout: AccountFixture | null // AUTH_LOCKOUT_01 — AUTH-015/030/031
+  inactiveEmployee: AccountFixture | null // AUTH_INACTIVE_EMPLOYEE_01 — AUTH-013
+  inactiveTenant: AccountFixture | null // AUTH_INACTIVE_TENANT_01 — AUTH-014
+  roleOwner: AccountFixture | null // AUTH_ROLE_OWNER_01 — FE-BE-014
+  roleManager: AccountFixture | null // AUTH_ROLE_MANAGER_01 — FE-BE-014
+  roleStaff: AccountFixture | null // AUTH_ROLE_STAFF_01 — FE-BE-014
+}
+
 export interface DeployEnv {
   environment: string
   frontendOrigin: string
@@ -24,6 +36,7 @@ export interface DeployEnv {
   authValid01: AccountFixture
   deployment: DeploymentIdentity
   provisioning: ProvisioningConfig
+  staticAccounts: StaticAccounts
 }
 
 export class ConfigError extends Error {
@@ -55,6 +68,16 @@ function requireOrigin(name: string, value: string, environment: string): string
     )
   }
   return value.replace(/\/$/, '')
+}
+
+// tenantCode/loginId/password 셋 중 하나라도 없으면 null — required()처럼 강제하지 않는다,
+// 이 계정들은 있으면 쓰고 없으면 Provisioning으로 폴백하는 선택 사항이라서다.
+function optionalAccount(prefix: string): AccountFixture | null {
+  const tenantCode = process.env[`DORO_${prefix}_TENANT_CODE`]
+  const loginId = process.env[`DORO_${prefix}_LOGIN_ID`]
+  const password = process.env[`DORO_${prefix}_PASSWORD`]
+  if (!tenantCode || !loginId || !password) return null
+  return { tenantCode, loginId, password }
 }
 
 export function loadDeployEnv(): DeployEnv {
@@ -90,6 +113,14 @@ export function loadDeployEnv(): DeployEnv {
       origin: process.env.PROVISIONING_ORIGIN ?? null,
       username: process.env.STORE_ACCESS_PROVISIONING_USERNAME ?? null,
       password: process.env.STORE_ACCESS_PROVISIONING_PASSWORD ?? null,
+    },
+    staticAccounts: {
+      lockout: optionalAccount('AUTH_LOCKOUT_01'),
+      inactiveEmployee: optionalAccount('AUTH_INACTIVE_EMPLOYEE_01'),
+      inactiveTenant: optionalAccount('AUTH_INACTIVE_TENANT_01'),
+      roleOwner: optionalAccount('AUTH_ROLE_OWNER_01'),
+      roleManager: optionalAccount('AUTH_ROLE_MANAGER_01'),
+      roleStaff: optionalAccount('AUTH_ROLE_STAFF_01'),
     },
   }
 }

@@ -41,40 +41,49 @@ export default function () {
   group('AUTH-030 / AUTH-031: 5회 실패 계정 잠금과 직후 상태', () => {
     const startedAt = new Date().toISOString()
 
-    if (!provisioningAvailable(env)) {
+    // AUTH_LOCKOUT_01 정적 계정이 있으면 Provisioning 없이 그 계정을 바로 잠근다(멱등 —
+    // 이미 잠겨 있어도 안전). Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md" 참고.
+    let tenantCode
+    let loginId
+    let correctPassword
+    if (env.staticAccounts.lockout) {
+      ;({ tenantCode, loginId, password: correctPassword } = env.staticAccounts.lockout)
+    } else if (!provisioningAvailable(env)) {
       for (const id of ['AUTH-030', 'AUTH-031']) {
         record(env, {
           testCaseId: id,
           startedAt,
           durationMs: 0,
           resultCode: 'SKIP_PRECONDITION',
-          errorClass: 'Provisioning 자격증명 없음 — 전용 계정 생성 불가',
+          errorClass: 'Provisioning 자격증명도 AUTH_LOCKOUT_01 정적 계정도 없음 — 전용 계정 준비 불가',
         })
       }
       return
-    }
-
-    const fixture = {
-      tenantCode: `e2e-lockout-${randomToken().slice(0, 10)}`,
-      tenantName: 'Doro E2E Lockout Fixture',
-      storeName: 'Doro E2E Lockout Fixture Store',
-      loginId: 'owner',
-      temporaryPassword: randomPassword('Lockout0'),
-    }
-
-    try {
-      provisionThrowawayOwner(env, fixture)
-    } catch (error) {
-      for (const id of ['AUTH-030', 'AUTH-031']) {
-        record(env, {
-          testCaseId: id,
-          startedAt,
-          durationMs: 0,
-          resultCode: 'ERROR_TRANSPORT',
-          errorClass: error instanceof Error ? error.message : String(error),
-        })
+    } else {
+      const fixture = {
+        tenantCode: `e2e-lockout-${randomToken().slice(0, 10)}`,
+        tenantName: 'Doro E2E Lockout Fixture',
+        storeName: 'Doro E2E Lockout Fixture Store',
+        loginId: 'owner',
+        temporaryPassword: randomPassword('Lockout0'),
       }
-      return
+      try {
+        provisionThrowawayOwner(env, fixture)
+      } catch (error) {
+        for (const id of ['AUTH-030', 'AUTH-031']) {
+          record(env, {
+            testCaseId: id,
+            startedAt,
+            durationMs: 0,
+            resultCode: 'ERROR_TRANSPORT',
+            errorClass: error instanceof Error ? error.message : String(error),
+          })
+        }
+        return
+      }
+      tenantCode = fixture.tenantCode
+      loginId = fixture.loginId
+      correctPassword = fixture.temporaryPassword
     }
 
     const t030 = Date.now()
@@ -82,7 +91,7 @@ export default function () {
     for (let i = 0; i < 5; i++) {
       const res = postJson(
         loginUrl,
-        { tenantCode: fixture.tenantCode, loginId: fixture.loginId, password: `wrong-${i}` },
+        { tenantCode, loginId, password: `wrong-${i}` },
         { jar: freshJar() },
       )
       statuses.push(res.status)
@@ -111,7 +120,7 @@ export default function () {
     const t031 = Date.now()
     const sixthRes = postJson(
       loginUrl,
-      { tenantCode: fixture.tenantCode, loginId: fixture.loginId, password: fixture.temporaryPassword },
+      { tenantCode, loginId, password: correctPassword },
       { jar: freshJar() },
     )
     const sixthBody = parseProblem(sixthRes)

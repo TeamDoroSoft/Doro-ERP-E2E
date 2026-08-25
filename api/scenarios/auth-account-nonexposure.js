@@ -87,6 +87,41 @@ function recordError(env, testCaseId, startedAt, t0, error) {
   })
 }
 
+// AUTH-015 본체 — 틀린 비밀번호 5회로 계정을 잠근 뒤(멱등: 이미 잠겨 있어도 안전) 정확한
+// 비밀번호로 "안전하게 거절되는지"를 확인한다. 정적 계정(AUTH_LOCKOUT_01) 경로와 Provisioning
+// 1회용 Fixture 경로가 이 로직을 공유한다 — auth-lockout-ratelimit.js의 AUTH-031과 같은 이유로
+// 401/429 둘 다 안전한 거절로 인정한다(계정 Rate Limit Bucket 리필과 잠금 만료가 같은 주기라
+// "Bucket은 찼는데 잠금은 안 풀린" 구간이 사실상 없다 — 실측 확인).
+function runLockoutNonDisclosureCheck(env, loginUrl, startedAt, t0, tenantCode, loginId, correctPassword) {
+  for (let i = 0; i < 5; i++) {
+    postJson(loginUrl, { tenantCode, loginId, password: `wrong-${i}` }, { jar: freshJar() })
+  }
+
+  const res = postJson(loginUrl, { tenantCode, loginId, password: correctPassword }, { jar: freshJar() })
+  const body = parseProblem(res)
+  const isSafeRejectionStatus = res.status === 401 || res.status === 429
+  const hasProblemCode = typeof body.code === 'string' && body.code.length > 0
+  const noInternalLeak = !/Exception|SQL|java\.|Caused by|lockout|잠금 만료/i.test(JSON.stringify(body))
+  const pass = isSafeRejectionStatus && hasProblemCode && noInternalLeak
+  check(null, { 'AUTH-015 잠금 직후 안전한 거절(401 또는 429), 상세 비노출': () => pass })
+  record(env, {
+    testCaseId: 'AUTH-015',
+    startedAt,
+    durationMs: Date.now() - t0,
+    resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
+    expected: { httpStatus: 401 },
+    observed: { httpStatus: res.status },
+    requestId: header(res, 'X-Request-Id'),
+    assertions: {
+      notSuccessful: res.status !== 200,
+      safeRejectionStatus: isSafeRejectionStatus,
+      problemCodePresent: hasProblemCode,
+      noInternalLeak,
+    },
+    errorClass: pass ? null : 'ASSERTION_MISMATCH',
+  })
+}
+
 export default function () {
   const env = loadDeployEnv()
   const loginUrl = `${env.apiOrigin}/api/v1/auth/login`
@@ -115,11 +150,20 @@ export default function () {
     recordNonDisclosure(env, 'AUTH-012', startedAt, t0, res, {})
   })
 
-  // AUTH-013~015는 실제로 테넌트·직원을 만들고 상태를 바꿔야 해서 Provisioning 자격증명이
-  // 필요하다 — 없으면 SESS-004/005와 같은 방식으로 SKIP_PRECONDITION.
-  if (!provisioningAvailable(env)) {
-    recordSkip(env, 'AUTH-013', 'Provisioning 자격증명 없음 — INACTIVE 직원 Fixture 생성 불가')
-    recordSkip(env, 'AUTH-014', 'Provisioning 자격증명 없음 — INACTIVE 테넌트 Fixture 생성 불가')
+  // AUTH-013/014: AUTH_INACTIVE_EMPLOYEE_01/AUTH_INACTIVE_TENANT_01 정적 계정이 있으면
+  // Provisioning 없이 곧바로 그 계정으로 로그인만 시도한다(이미 INACTIVE 상태로 만들어져
+  // 있다는 전제 — Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md" 참고).
+  // 없으면 기존처럼 Provisioning API로 1회용 Fixture를 만든다.
+  if (env.staticAccounts.inactiveEmployee) {
+    group('AUTH-013: INACTIVE 직원 + 정확한 비밀번호 (정적 계정)', () => {
+      const startedAt = new Date().toISOString()
+      const t0 = Date.now()
+      const { tenantCode, loginId, password } = env.staticAccounts.inactiveEmployee
+      const res = postJson(loginUrl, { tenantCode, loginId, password }, { jar: freshJar() })
+      recordNonDisclosure(env, 'AUTH-013', startedAt, t0, res, {})
+    })
+  } else if (!provisioningAvailable(env)) {
+    recordSkip(env, 'AUTH-013', 'Provisioning 자격증명도 AUTH_INACTIVE_EMPLOYEE_01 정적 계정도 없음 — INACTIVE 직원 Fixture 준비 불가')
   } else {
     group('AUTH-013: INACTIVE 직원 + 정확한 비밀번호', () => {
       const startedAt = new Date().toISOString()
@@ -183,7 +227,19 @@ export default function () {
         recordError(env, 'AUTH-013', startedAt, t0, error)
       }
     })
+  }
 
+  if (env.staticAccounts.inactiveTenant) {
+    group('AUTH-014: INACTIVE 테넌트/매장의 정상 계정 (정적 계정)', () => {
+      const startedAt = new Date().toISOString()
+      const t0 = Date.now()
+      const { tenantCode, loginId, password } = env.staticAccounts.inactiveTenant
+      const res = postJson(loginUrl, { tenantCode, loginId, password }, { jar: freshJar() })
+      recordNonDisclosure(env, 'AUTH-014', startedAt, t0, res, {})
+    })
+  } else if (!provisioningAvailable(env)) {
+    recordSkip(env, 'AUTH-014', 'Provisioning 자격증명도 AUTH_INACTIVE_TENANT_01 정적 계정도 없음 — INACTIVE 테넌트 Fixture 준비 불가')
+  } else {
     group('AUTH-014: INACTIVE 테넌트/매장의 정상 계정', () => {
       const startedAt = new Date().toISOString()
       const t0 = Date.now()
@@ -227,11 +283,19 @@ export default function () {
   }
 
   // AUTH-015는 AUTH-030처럼 계정을 실제로 잠근다 — auth-lockout-ratelimit.js와 같은 안전장치
-  // (RUN_DESTRUCTIVE_AUTH_TESTS=true)를 추가로 요구한다.
-  if (!provisioningAvailable(env)) {
-    recordSkip(env, 'AUTH-015', 'Provisioning 자격증명 없음 — 잠금 전용 Fixture 생성 불가')
-  } else if (__ENV[DESTRUCTIVE_FLAG] !== 'true') {
+  // (RUN_DESTRUCTIVE_AUTH_TESTS=true)를 정적 계정 경로에서도 그대로 요구한다(실제로 계정을
+  // 잠그는 행위 자체는 정적/1회용 여부와 무관하게 파괴적이라서다).
+  if (__ENV[DESTRUCTIVE_FLAG] !== 'true') {
     recordSkip(env, 'AUTH-015', `${DESTRUCTIVE_FLAG}=true로 명시하지 않으면 실행하지 않음 (auth-lockout-ratelimit.js와 같은 안전장치 재사용)`)
+  } else if (env.staticAccounts.lockout) {
+    group('AUTH-015: 잠금 상태 + 정확한 비밀번호 (정적 계정)', () => {
+      const startedAt = new Date().toISOString()
+      const t0 = Date.now()
+      const { tenantCode, loginId, password } = env.staticAccounts.lockout
+      runLockoutNonDisclosureCheck(env, loginUrl, startedAt, t0, tenantCode, loginId, password)
+    })
+  } else if (!provisioningAvailable(env)) {
+    recordSkip(env, 'AUTH-015', 'Provisioning 자격증명도 AUTH_LOCKOUT_01 정적 계정도 없음 — 잠금 전용 Fixture 준비 불가')
   } else {
     group('AUTH-015: 잠금 상태 + 정확한 비밀번호', () => {
       const startedAt = new Date().toISOString()
@@ -245,46 +309,7 @@ export default function () {
           temporaryPassword: randomPassword('Lock015'),
         }
         provisionThrowawayOwner(env, fixture)
-
-        for (let i = 0; i < 5; i++) {
-          postJson(loginUrl, { tenantCode: fixture.tenantCode, loginId: fixture.loginId, password: `wrong-${i}` }, { jar: freshJar() })
-        }
-
-        // 처음엔 여기서 65초를 기다린 뒤 정확한 비밀번호로 재시도했다 — 그런데 실제로 돌려보니
-        // 200(로그인 성공)이 나왔다. 계정 Rate Limit Bucket 리필(분당 1개)과 잠금 만료(최초
-        // 1분)가 둘 다 ~60초 주기라, 5번째 실패 시점에 거의 동시에 시작해서 거의 동시에
-        // 풀린다 — "Bucket은 찼는데 잠금은 아직 안 풀린" 관찰 가능한 구간이 사실상 없다
-        // (auth-lockout-ratelimit.js의 AUTH-031과 정확히 같은 현상, 거기서도 실측 확인).
-        // 그래서 기다리지 않고 5번째 실패 직후 곧바로 확인한다 — 이 시점엔 Bucket이 아직
-        // 소진 상태라 401(잠금)이 아니라 429(Bucket 소진)가 예상되며, AUTH-031과 같은 기준으로
-        // "200이 아니고, 안전한 Problem 응답이고, 내부 정보가 없는지"를 판정한다.
-        const res = postJson(
-          loginUrl,
-          { tenantCode: fixture.tenantCode, loginId: fixture.loginId, password: fixture.temporaryPassword },
-          { jar: freshJar() },
-        )
-        const body = parseProblem(res)
-        const isSafeRejectionStatus = res.status === 401 || res.status === 429
-        const hasProblemCode = typeof body.code === 'string' && body.code.length > 0
-        const noInternalLeak = !/Exception|SQL|java\.|Caused by|lockout|잠금 만료/i.test(JSON.stringify(body))
-        const pass = isSafeRejectionStatus && hasProblemCode && noInternalLeak
-        check(null, { 'AUTH-015 잠금 직후 안전한 거절(401 또는 429), 상세 비노출': () => pass })
-        record(env, {
-          testCaseId: 'AUTH-015',
-          startedAt,
-          durationMs: Date.now() - t0,
-          resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
-          expected: { httpStatus: 401 },
-          observed: { httpStatus: res.status },
-          requestId: header(res, 'X-Request-Id'),
-          assertions: {
-            notSuccessful: res.status !== 200,
-            safeRejectionStatus: isSafeRejectionStatus,
-            problemCodePresent: hasProblemCode,
-            noInternalLeak,
-          },
-          errorClass: pass ? null : 'ASSERTION_MISMATCH',
-        })
+        runLockoutNonDisclosureCheck(env, loginUrl, startedAt, t0, fixture.tenantCode, fixture.loginId, fixture.temporaryPassword)
       } catch (error) {
         recordError(env, 'AUTH-015', startedAt, t0, error)
       }
