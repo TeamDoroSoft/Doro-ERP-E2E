@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+// 전체 게이트 — 필수 게이트(run-mandatory-gate.mjs) 전부 + 조건부/파괴적 시나리오
+// (배포 Frontend–Backend 종단 검증.md §4 조건부 Browser, §5의 AUTH-030~035·OPS-002, §6의
+// OPS-005)까지 한 번에 실행한다.
+//
+// 파괴적 플래그(RUN_DESTRUCTIVE_AUTH_TESTS, RUN_FAULT_INJECTION_TESTS)는 이 스크립트가 절대
+// 대신 켜주지 않는다 — 실행하는 사람이 이 명령을 돌리기 "전에" 직접 export해야만 해당
+// 케이스가 실제로 실행된다. 안 켜져 있으면 관련 단계를 건너뛰고 무엇을 export해야 켜지는지
+// 안내만 출력한다. FE-BE-012·AUTH-030/031/033/034는 각 파일 안의 기존 안전장치가 그대로
+// 처리한다(설정 안 돼 있으면 파일 자체가 SKIP_PRECONDITION으로 기록). OPS-001/002/003/005는
+// 개별 스크립트가 `--confirm` CLI 인자를 직접 요구하는 구조라 이 오케스트레이터가 대신
+// 판단해야 하는데, 새 플래그를 따로 만들지 않고 FE-BE-012와 같은 위험 범주(실제로 무언가를
+// 멈추거나 지우거나 바꾼다)이므로 RUN_FAULT_INJECTION_TESTS 하나를 그대로 재사용한다 — 켜져
+// 있을 때만 `--confirm`을 붙여서 호출하고, 아니면 아예 호출하지 않고 SKIP으로 기록한다.
+import { pathToFileURL } from 'node:url'
+import { runMandatoryGate } from './run-mandatory-gate.mjs'
+import { runStep, guardFlag, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
+
+export async function runFullGate() {
+  const steps = await runMandatoryGate()
+
+  steps.push(
+    await runStep('FE-BE-010~015 (Playwright 조건부 시나리오)', () => {
+      guardFlag(
+        'RUN_FAULT_INJECTION_TESTS',
+        'FE-BE-012(Provider 장애 주입)',
+        'RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 (나머지 FE-BE-010/011/013/014/015는 이 플래그와 무관하게 각자 Fixture 유무로 실행/SKIP됩니다).',
+      )
+      return runPlaywrightSpec('tests/fe-be-conditional.spec.ts')
+    }),
+  )
+
+  steps.push(
+    await runStep('AUTH-030,031,033,034 (k6 잠금·Rate Limit)', () => {
+      guardFlag(
+        'RUN_DESTRUCTIVE_AUTH_TESTS',
+        'AUTH-030/031/033/034 전체',
+        'RUN_DESTRUCTIVE_AUTH_TESTS=true를 export한 뒤 다시 실행하세요.',
+      )
+      return runK6Scenario('api/scenarios/auth-lockout-ratelimit.js', 'auth-lockout-ratelimit', [
+        'AUTH-030', 'AUTH-031', 'AUTH-033', 'AUTH-034',
+      ])
+    }),
+  )
+
+  const isLocalRehearsal = (process.env.DORO_ENVIRONMENT ?? '').startsWith('local')
+
+  for (const opsId of ['OPS-001', 'OPS-003']) {
+    steps.push(
+      await runStep(`${opsId} (로컬 Docker 장애 주입)`, () => {
+        if (!isLocalRehearsal) {
+          console.log(`  ⚠ DORO_ENVIRONMENT가 로컬 리허설 대상이 아닙니다 — ${opsId}를 이번 실행에서 SKIP합니다.`)
+          console.log(
+            '    scripts/run-fault-injection.mjs는 로컬 Docker 주소와 컨테이너 이름에 하드코딩되어 실제 배포를 대상으로 실행할 수 없습니다. ' +
+              '잘못된 대상을 검증하지 않도록 이 단계를 건너뜁니다.',
+          )
+          return { ok: true, skipped: true }
+        }
+        if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
+          guardFlag(
+            'RUN_FAULT_INJECTION_TESTS',
+            `${opsId}(실제로 컨테이너를 멈췄다 올림)`,
+            `RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 — 이 스크립트는 그 값이 있을 때만 --confirm을 붙여서 호출됩니다.`,
+          )
+          return { ok: true, skipped: true }
+        }
+        return runNodeScript('scripts/run-fault-injection.mjs', [opsId, '--confirm'])
+      }),
+    )
+  }
+
+  steps.push(
+    await runStep('OPS-002 (실 배포 EKS Provider 미승인 응답, 미검증)', () => {
+      if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
+        guardFlag(
+          'RUN_FAULT_INJECTION_TESTS',
+          'OPS-002(실제로 store-access-api Service selector를 디코이로 임시 교체)',
+          'RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 — 이 스크립트는 그 값이 있을 때만 --confirm을 붙여서 호출됩니다. ' +
+            '단, 이 세션 기준 EKS Access Entry가 없어 이 단계는 켜도 실패할 가능성이 높습니다(project_eks_access_terraform_role 메모 참고). ' +
+            '켜져 있는 동안 store-access-api를 쓰는 edge-api의 모든 통신이 함께 영향받는다는 점도 스크립트 상단 주석 참고.',
+        )
+        return { ok: true, skipped: true }
+      }
+      return runNodeScript('scripts/verify-provider-malformed-response.mjs', ['--confirm'])
+    }),
+  )
+
+  steps.push(
+    await runStep('OPS-005 (실 배포 EKS 일부 Pod 비정상, 미검증)', () => {
+      if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
+        guardFlag(
+          'RUN_FAULT_INJECTION_TESTS',
+          'OPS-005(실제로 store-access-api Pod 1개를 delete)',
+          'RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 — 이 스크립트는 그 값이 있을 때만 --confirm을 붙여서 호출됩니다. ' +
+            '단, 이 세션 기준 EKS Access Entry가 없어 이 단계는 켜도 실패할 가능성이 높습니다(project_eks_access_terraform_role 메모 참고).',
+        )
+        return { ok: true, skipped: true }
+      }
+      return runNodeScript('scripts/verify-partial-pod-failure.mjs', ['--confirm'])
+    }),
+  )
+
+  return steps
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const steps = await runFullGate()
+  const allOk = printFinalSummary(steps)
+  process.exit(allOk ? 0 : 1)
+}

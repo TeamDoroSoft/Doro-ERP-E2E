@@ -209,6 +209,9 @@ test('FE-BE-011 Rate Limit 유발 시 안전한 재시도 안내', async ({ page
 // FE-BE-012: Provider 장애 주입 승인 — Login Provider 사용 불가
 // ---------------------------------------------------------------------------
 const FAULT_INJECTION_FLAG = 'RUN_FAULT_INJECTION_TESTS'
+const IS_LOCAL = env.environment.startsWith('local')
+
+// -- 로컬 Docker Prod-like 경로 (기존 그대로) --------------------------------
 const STORE_ACCESS_CONTAINER = 'doro-erp-local-apps-store-access-api-1'
 const STORE_ACCESS_HEALTH_URL = 'https://localhost:8081/actuator/health'
 
@@ -230,10 +233,55 @@ async function waitForStoreAccessHealthy(timeoutMs = 60_000): Promise<void> {
   throw new Error(`store-access-api가 ${timeoutMs}ms 안에 다시 healthy 상태가 되지 않았습니다`)
 }
 
+// -- 실 배포(EKS) 경로 --------------------------------------------------------
+// Doro-ERP-GitOps deploy/base/store-access-api/{deployment,availability,service}.yaml 기준:
+// Deployment/HPA/Service가 모두 이름 "store-access-api"이고, overlays/prod/alpha에서
+// namespace가 "doro-alpha"로 고정된다. HPA는 minReplicas:2/maxReplicas:4로 CPU 기준
+// Autoscale하므로, 이 값을 그대로 두고 Deployment만 --replicas=0으로 내리면 HPA
+// Controller가 곧바로(기본 Sync 주기 15초 안) minReplicas 미달을 감지해 다시 올려버린다 —
+// 그래서 HPA의 minReplicas를 0으로 먼저 낮춰 "일시 정지"시킨 다음에 Deployment를 내린다.
+// PodDisruptionBudget(maxUnavailable:1)은 Eviction API 경로에만 적용되고 Deployment
+// Scale-down 자체는 막지 않으므로 별도로 다룰 필요가 없다.
+//
+// 주의: 이 경로는 사설(Private) EKS API Endpoint에 도달 가능한 kubectl context가 필요하다 —
+// VPN/Bastion 없이는 이 리포지토리를 작업한 환경에서 전혀 검증할 수 없었다. kubectl이
+// 없거나 대상 리소스에 접근할 수 없으면 실행 전 SKIP_PRECONDITION으로 안전하게 건너뛴다.
+// 실제 클러스터 접근 권한이 있는 사람이 처음 실행할 때 결과를 반드시 직접 확인할 것.
+const K8S_NAMESPACE = process.env.DORO_K8S_NAMESPACE ?? 'doro-alpha'
+const K8S_DEPLOYMENT = process.env.DORO_K8S_STORE_ACCESS_DEPLOYMENT ?? 'store-access-api'
+const K8S_HPA = process.env.DORO_K8S_STORE_ACCESS_HPA ?? 'store-access-api'
+
+function kubectl(args: string[]): string {
+  return execFileSync('kubectl', args, { encoding: 'utf8' }).trim()
+}
+
+function kubectlReachable(): boolean {
+  try {
+    kubectl(['get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '-o', 'name'])
+    kubectl(['get', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '-o', 'name'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForReadyReplicas(target: number, timeoutMs = 90_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const raw = kubectl([
+      'get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE,
+      '-o', 'jsonpath={.status.readyReplicas}',
+    ])
+    if (Number(raw || '0') === target) return true
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  return false
+}
+
 test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({ page }) => {
-  // store-access-api 재기동에 로컬 실측 약 24초가 걸린다(finally의 waitForStoreAccessHealthy) —
-  // 기본 30초 Timeout으로는 docker stop/페이지 검증/재기동 대기를 다 못 채운다.
-  test.setTimeout(90_000)
+  // store-access-api 재기동에 로컬 실측 약 24초가 걸린다(finally의 복구 대기) — 실 배포 경로는
+  // Pod 재기동까지 더 오래 걸릴 수 있어 여유를 더 크게 잡는다.
+  test.setTimeout(180_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
@@ -244,12 +292,41 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: `${FAULT_INJECTION_FLAG}=true로 명시하지 않으면 실행하지 않음 (배포 Frontend–Backend 종단 검증.md §4 "Provider 장애를 임의로 유발하지 않는다", 로컬 Docker 컨테이너를 실제로 멈춤)`,
+      errorClass: `${FAULT_INJECTION_FLAG}=true로 명시하지 않으면 실행하지 않음 (배포 Frontend–Backend 종단 검증.md §4 "Provider 장애를 임의로 유발하지 않는다", ${IS_LOCAL ? '로컬 Docker 컨테이너' : `실 배포 EKS의 ${K8S_NAMESPACE}/${K8S_DEPLOYMENT} Deployment`}를 실제로 멈춤)`,
     })
     return
   }
 
-  execFileSync('docker', ['stop', STORE_ACCESS_CONTAINER])
+  if (!IS_LOCAL && !kubectlReachable()) {
+    record({
+      testCaseId: 'FE-BE-012',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: `kubectl로 ${K8S_NAMESPACE} 네임스페이스의 Deployment/HPA "${K8S_DEPLOYMENT}"에 접근할 수 없음 — 실 배포 대상 Provider 장애 주입에는 EKS 사설 API Endpoint에 도달 가능한 kubectl context가 필요하다(VPN/Bastion 필요).`,
+    })
+    return
+  }
+
+  let originalReplicas: string | null = null
+  let originalMinReplicas: string | null = null
+
+  if (IS_LOCAL) {
+    execFileSync('docker', ['stop', STORE_ACCESS_CONTAINER])
+  } else {
+    originalReplicas = kubectl(['get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '-o', 'jsonpath={.spec.replicas}'])
+    originalMinReplicas = kubectl(['get', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '-o', 'jsonpath={.spec.minReplicas}'])
+    kubectl(['patch', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '--type=merge', '-p', '{"spec":{"minReplicas":0}}'])
+    kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '--replicas=0'])
+    const wentDown = await waitForReadyReplicas(0)
+    if (!wentDown) {
+      // 복구 없이 그냥 멈추면 실 서비스가 계속 죽어 있게 되므로, 진행 전에 즉시 원복부터 시도한다.
+      kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, `--replicas=${originalReplicas}`])
+      kubectl(['patch', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '--type=merge', '-p', `{"spec":{"minReplicas":${originalMinReplicas}}}`])
+      throw new Error(`${K8S_NAMESPACE}/${K8S_DEPLOYMENT}의 readyReplicas가 0으로 내려가지 않았습니다 — 원래 상태로 되돌렸습니다.`)
+    }
+  }
+
   try {
     await page.goto('/pos/login')
     await fillLoginForm(page, 'e2e-fe-be-012-probe', 'probe', 'probe-Password-0012')
@@ -277,8 +354,19 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
 
     expect(pass, `FE-BE-012 실패: status=${status} errorText="${errorText}"`).toBe(true)
   } finally {
-    execFileSync('docker', ['start', STORE_ACCESS_CONTAINER])
-    await waitForStoreAccessHealthy()
+    if (IS_LOCAL) {
+      execFileSync('docker', ['start', STORE_ACCESS_CONTAINER])
+      await waitForStoreAccessHealthy()
+    } else {
+      kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, `--replicas=${originalReplicas}`])
+      kubectl(['patch', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '--type=merge', '-p', `{"spec":{"minReplicas":${originalMinReplicas}}}`])
+      const recovered = await waitForReadyReplicas(Number(originalReplicas))
+      if (!recovered) {
+        throw new Error(
+          `${K8S_NAMESPACE}/${K8S_DEPLOYMENT}가 원래 readyReplicas(${originalReplicas})로 복구되지 않았습니다 — 직접 확인이 필요합니다.`,
+        )
+      }
+    }
   }
 })
 
