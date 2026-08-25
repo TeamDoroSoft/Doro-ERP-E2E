@@ -12,9 +12,14 @@ export const options = {
   },
 }
 
-// 실행 뒤 `node api/lib/build-report.mjs <log> session-flow SESS-001,SESS-002,SESS-003`로 summary.json을
-// 만든다 — 이 스크립트가 다루는 필수 케이스 ID (README 참고). SESS-004/005는 Provisioning
-// 자격증명이 있을 때만 추가되므로 그때는 뒤에 이어 붙인다(README 참고).
+// 실행 뒤 `node api/lib/build-report.mjs <log> session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007`로
+// summary.json을 만든다 — 이 스크립트가 다루는 필수 케이스 ID (README 참고). SESS-004/005는
+// Provisioning 자격증명이 있을 때만 추가되므로 그때는 뒤에 이어 붙인다(README 참고).
+//
+// SESS-006/007: /api/v1/auth/reauthenticate(ADR-02-003/011, "중요 관리 작업 전 15분 재인증 창"
+// 갱신). 원래 보고서 §5.6엔 없던 항목 — Doro-ERP-Service의 최근 tests/system 커밋을 검토하다
+// 이 Endpoint가 Edge HMAC 보호 대상이 됐다는 걸 알게 됐고, 실제로 보니 실패 카운트가 로그인
+// 잠금(AUTH-030류)과 별개로 Session에만 종속된 걸 확인해서 추가했다.
 
 // FE-BE-003이 실제 화면에서 로그인 직후 자동으로 호출하는 것과 같은 비파괴 조회 API를
 // 그대로 쓴다 (Role 제한 없음 — EdgeOrderController.java, OrderController.java 확인 완료).
@@ -36,7 +41,7 @@ export default function () {
   )
   if (loginRes.status !== 200) {
     const startedAt = new Date().toISOString()
-    for (const id of ['SESS-001', 'SESS-002']) {
+    for (const id of ['SESS-001', 'SESS-002', 'SESS-006']) {
       record(env, {
         testCaseId: id,
         startedAt,
@@ -85,6 +90,113 @@ export default function () {
       observed: { protectedApiPath: PROTECTED_PATH, protectedApiStatus: res.status },
       requestId: header(res, 'X-Request-Id'),
       assertions: { status401: pass, code: body.code || null },
+      errorClass: pass ? null : 'ASSERTION_MISMATCH',
+    })
+  })
+
+  group('SESS-006: 재인증 성공 시 Session ID 회전', () => {
+    const startedAt = new Date().toISOString()
+    const t0 = Date.now()
+    const reauthUrl = `${env.apiOrigin}/api/v1/auth/reauthenticate`
+
+    const sessionBefore = (jar.cookiesForURL(protectedUrl)['SESSION'] || [])[0]
+    const res = postJson(
+      reauthUrl,
+      { password: account.password },
+      { jar, headers: { 'X-XSRF-TOKEN': xsrfTokenFrom(jar, protectedUrl) } },
+    )
+    // ReauthenticationService.recordSuccessAndRotate가 성공 즉시 새 SESSION Cookie를 발급한다 —
+    // k6 CookieJar가 응답의 Set-Cookie를 자동 반영하므로 이후 jar를 계속 써도 된다.
+    const sessionAfter = (jar.cookiesForURL(protectedUrl)['SESSION'] || [])[0]
+    const rotated = !!sessionBefore && !!sessionAfter && sessionBefore !== sessionAfter
+    const pass = res.status === 204 && rotated
+    check(null, { 'SESS-006 재인증 성공 & Session 회전': () => pass })
+    record(env, {
+      testCaseId: 'SESS-006',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
+      expected: { requestPath: '/api/v1/auth/reauthenticate', httpStatus: 204 },
+      observed: { httpStatus: res.status },
+      requestId: header(res, 'X-Request-Id'),
+      assertions: { status204: res.status === 204, sessionRotated: rotated },
+      errorClass: pass ? null : 'ASSERTION_MISMATCH',
+    })
+  })
+
+  group('SESS-007: 재인증 실패 누적 — 계정이 아니라 Session만 무효화', () => {
+    const startedAt = new Date().toISOString()
+    const t0 = Date.now()
+
+    // SESS-006과 별개의 새 Session에서 진행한다 — 실패 횟수가 Session에 종속되므로(위 주석
+    // 참고), 회전 뒤 Session과 섞이면 몇 번째 시도인지 계산이 꼬인다.
+    const reauthJar = freshJar()
+    const preLoginRes = postJson(
+      loginUrl,
+      { tenantCode: account.tenantCode, loginId: account.loginId, password: account.password },
+      { jar: reauthJar },
+    )
+    if (preLoginRes.status !== 200) {
+      record(env, {
+        testCaseId: 'SESS-007',
+        startedAt,
+        durationMs: 0,
+        accountAlias: 'AUTH_VALID_01',
+        resultCode: 'SKIP_PRECONDITION',
+        errorClass: `SESS-007 전용 로그인 실패 (status=${preLoginRes.status}) — 전제조건 불충족`,
+      })
+      return
+    }
+
+    const reauthUrl = `${env.apiOrigin}/api/v1/auth/reauthenticate`
+    const statuses = []
+    let lastRes
+    for (let i = 0; i < 5; i++) {
+      lastRes = postJson(
+        reauthUrl,
+        { password: `wrong-${i}` },
+        { jar: reauthJar, headers: { 'X-XSRF-TOKEN': xsrfTokenFrom(reauthJar, protectedUrl) } },
+      )
+      statuses.push(lastRes.status)
+    }
+    const lastBody = parseProblem(lastRes)
+
+    // ReauthenticationService.MAX_CONSECUTIVE_FAILURES=5: 1~4회차는 AUTHENTICATION_FAILED,
+    // 5회차에 SESSION_INVALIDATED로 바뀐다. 둘 다 HTTP Status는 401이라 code로 구분해야 한다.
+    const first4All401 = statuses.slice(0, 4).every((s) => s === 401)
+    const fifthInvalidated = lastRes.status === 401 && lastBody.code === 'SESSION_INVALIDATED'
+
+    // 무효화된 Session으로 보호 API를 호출해도 401이어야 한다.
+    const afterRes = getJson(protectedUrl, { jar: reauthJar })
+    const sessionRejectedAfter = afterRes.status === 401
+
+    // 이건 계정 잠금이 아니라 Session 무효화라, 같은 계정으로 다시 로그인하면 정상 성공해야
+    // 한다 — AUTH-030류(계정 잠금)와 구분되는 지점이다.
+    const reloginRes = postJson(
+      loginUrl,
+      { tenantCode: account.tenantCode, loginId: account.loginId, password: account.password },
+      { jar: freshJar() },
+    )
+    const accountNotLocked = reloginRes.status === 200
+
+    const pass = first4All401 && fifthInvalidated && sessionRejectedAfter && accountNotLocked
+    check(null, { 'SESS-007 재인증 실패 누적 시 Session만 무효화': () => pass })
+    record(env, {
+      testCaseId: 'SESS-007',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
+      expected: { requestPath: '/api/v1/auth/reauthenticate', httpStatus: 401 },
+      observed: { httpStatus: lastRes.status, code: lastBody.code || null },
+      requestId: header(lastRes, 'X-Request-Id'),
+      assertions: {
+        first4Failures401: first4All401,
+        fifthSessionInvalidated: fifthInvalidated,
+        sessionRejectedAfterInvalidation: sessionRejectedAfter,
+        accountNotLocked,
+      },
       errorClass: pass ? null : 'ASSERTION_MISMATCH',
     })
   })

@@ -138,7 +138,7 @@ DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_
 DORO_AUTH_VALID_01_PASSWORD=... PROVISIONING_ORIGIN=... \
 STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
 # 5) 세 결과를 하나의 판정으로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
@@ -272,7 +272,7 @@ STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
 DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/session-flow.js \
   > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
 # 세 결과를 하나로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
