@@ -11,7 +11,7 @@ import {
 } from '../lib/provisioning'
 import { setupRoleFixtures, type RoleAccount } from '../lib/roleFixtures'
 
-// FE-BE-010~015 (보고서 §5.2 "Frontend–Backend 조건부 화면 반응"). FE-BE-001~006과 달리 전부
+// FE-BE-010~015 (배포 Frontend–Backend 종단 검증.md §4 "조건부 Browser 시나리오"). FE-BE-001~006과 달리 전부
 // 조건부다 — Fixture나 안전장치가 없으면 SKIP_PRECONDITION으로 건너뛰고 나머지는 계속 실행한다.
 
 const env = loadDeployEnv()
@@ -244,7 +244,7 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: `${FAULT_INJECTION_FLAG}=true로 명시하지 않으면 실행하지 않음 (보고서 §5.7, 로컬 Docker 컨테이너를 실제로 멈춤)`,
+      errorClass: `${FAULT_INJECTION_FLAG}=true로 명시하지 않으면 실행하지 않음 (배포 Frontend–Backend 종단 검증.md §4 "Provider 장애를 임의로 유발하지 않는다", 로컬 Docker 컨테이너를 실제로 멈춤)`,
     })
     return
   }

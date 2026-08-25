@@ -13,7 +13,8 @@ import {
 } from '../lib/provisioning.js'
 import { record } from '../lib/resultLogger.js'
 
-// AUTH-011~015 (보고서 §5.4 "계정 존재 여부 비노출"). 다섯 시나리오 전부 같은 401
+// AUTH-011~015 (배포 Frontend–Backend 종단 검증.md §5 "공통 계약의 배포 재검증" — 계정 존재 여부
+// 비노출). 다섯 시나리오 전부 같은 401
 // AUTHENTICATION_FAILED + 같은 Problem 스키마로 응답해야 한다 — 그래야 공격자가 응답만 보고
 // "loginId가 없다"/"테넌트가 없다"/"계정이 비활성이다"/"잠겨 있다"를 구분할 수 없다.
 export const options = {
@@ -26,7 +27,7 @@ export const options = {
 
 const DESTRUCTIVE_FLAG = 'RUN_DESTRUCTIVE_AUTH_TESTS'
 
-// §6.4 공통 오류 계약: status+code+Content-Type+fieldErrors가 전부 같은 모양이어야 "비노출"이다.
+// 공통 오류 계약: status+code+Content-Type+fieldErrors가 전부 같은 모양이어야 "비노출"이다.
 function assertNonDisclosure(res) {
   const body = parseProblem(res)
   const contentType = (header(res, 'Content-Type') || '').split(';')[0].trim()
@@ -230,7 +231,7 @@ export default function () {
   if (!provisioningAvailable(env)) {
     recordSkip(env, 'AUTH-015', 'Provisioning 자격증명 없음 — 잠금 전용 Fixture 생성 불가')
   } else if (__ENV[DESTRUCTIVE_FLAG] !== 'true') {
-    recordSkip(env, 'AUTH-015', `${DESTRUCTIVE_FLAG}=true로 명시하지 않으면 실행하지 않음 (보고서 §5.5 안전장치 재사용)`)
+    recordSkip(env, 'AUTH-015', `${DESTRUCTIVE_FLAG}=true로 명시하지 않으면 실행하지 않음 (auth-lockout-ratelimit.js와 같은 안전장치 재사용)`)
   } else {
     group('AUTH-015: 잠금 상태 + 정확한 비밀번호', () => {
       const startedAt = new Date().toISOString()

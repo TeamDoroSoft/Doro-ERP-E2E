@@ -17,7 +17,7 @@ export const options = {
 // 주석) 실행 뒤 `node api/lib/build-report.mjs <log> auth-mandatory AUTH-001,AUTH-002,...`처럼
 // 인자로 넘긴다 — README 참고.
 //
-// 계정 Rate Limit Bucket(보고서 §2.5: 기본 용량 5회, 분당 1회 보충)을 이 스모크 하나로 소진하지
+// 계정 Rate Limit Bucket(기본 용량 5회, 분당 1회 보충)을 이 스모크 하나로 소진하지
 // 않도록 AUTH_VALID_01 실계정으로 로그인을 시도하는 케이스를 최소화한다.
 //   - AUTH-001·AUTH-002·AUTH-024는 성공 스키마·RequestId Echo·위조 내부 Header 무시를
 //     "같은 한 번의 성공 로그인 호출"에서 함께 검증한다.

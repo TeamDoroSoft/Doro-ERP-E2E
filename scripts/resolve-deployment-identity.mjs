@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 보고서 §7.3 `deployment` 4개 필드(frontendRevision/cloudFrontDistributionId/edgeRevision/
+// `deployment` 4개 필드(frontendRevision/cloudFrontDistributionId/edgeRevision/
 // storeAccessRevision)를 실제 AWS·GitOps에서 읽어와 .env.deployment-identity.local에 쓴다.
 //
 // 이 스크립트는 자격증명을 저장하거나 관리하지 않는다 — AWS CLI가 이미 구성된 자격증명 체인

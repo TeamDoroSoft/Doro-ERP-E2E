@@ -3,7 +3,7 @@ import { loadDeployEnv } from '../lib/env'
 import { loginAsAuthValid01 } from '../lib/loginFlow'
 import { appendCaseResult, type CaseResultInput } from '../lib/resultLogger'
 
-// FE-BE-001~006: 보고서 §5.1 "Frontend–Backend 필수 종단 Gate". Mock, page.route().fulfill(),
+// FE-BE-001~006: 배포 Frontend–Backend 종단 검증.md §3 "필수 Browser Gate". Mock, page.route().fulfill(),
 // Session Storage 사전 주입을 쓰지 않는다 — 실제 배포 Origin을 그대로 연다.
 
 const env = loadDeployEnv()

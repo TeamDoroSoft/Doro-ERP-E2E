@@ -1,7 +1,7 @@
 # doro-erp-e2e
 
-`Doro ERP Frontend–Backend 실제 배포 종단 테스트 계획 보고서`
-(`ERP/Docs/의사결정/Doro ERP Frontend–Backend 배포 종단 테스트 계획 보고서.md`, v2.1)를 구현하는 배포 종단(End-to-End) 테스트 러너.
+`배포 Frontend–Backend 종단 검증`
+(`ERP/Docs/Specifications/운영·배포/배포 Frontend–Backend 종단 검증.md`)을 구현하는 배포 종단(End-to-End) 테스트 러너.
 
 `Doro-ERP-Front`, `Doro-ERP-Infra`, `Doro-ERP-Service`, `Docs`, `Doro-ERP-GitOps`와 마찬가지로 독립 git 저장소이며,
 `Final_Project/CLAUDE.md`의 브랜치 네이밍(`feature/`, `bugfix/`, `refactor/`, `hotfix/`)과 리뷰 워크플로우(Claude 구현 → Codex 로컬 diff 리뷰)를 동일하게 따른다.
@@ -16,13 +16,13 @@ doro-erp-e2e/
 ├── api/                # k6 배포 API Runner — AUTH-*, SESS-*, OPS-*
 │   ├── scenarios/
 │   └── lib/
-├── shared/             # 두 러너가 공유하는 §7 결과 스키마/판정 규칙 정의
+├── shared/             # 두 러너가 공유하는 결과 스키마/판정 규칙 정의 (이 저장소 자체가 정본)
 ├── reports/            # 실행 산출물 (runId별, gitignore 대상)
 ├── .env.deploy-e2e.example   # 환경변수 템플릿 (플레이스홀더만, 실값 커밋 금지)
 ```
 
 `browser`(Playwright)와 `api`(k6)를 같은 저장소 안에 두되 도구는 분리한다 — k6 Browser 모듈은 `page.on('request')`/`page.route()`/CDP 접근을 지원하지 않아
-`FE-BE-002`~`006`이 요구하는 Network 계층 관찰(§5.1, §6.2)을 충족할 수 없기 때문 ([grafana/k6#4020](https://github.com/grafana/k6/issues/4020)). 자세한 도구 선정 근거는 보고서 §8.1 참고.
+`FE-BE-002`~`006`이 요구하는 Network 계층 관찰(배포 Frontend–Backend 종단 검증.md §3)을 충족할 수 없기 때문 ([grafana/k6#4020](https://github.com/grafana/k6/issues/4020)). 자세한 도구 선정 근거는 같은 문서 §2.1 참고.
 
 ## 구현 범위 (현재)
 
@@ -35,7 +35,7 @@ doro-erp-e2e/
 `DORO_RUN_ID`를 지정해야 서로 짝지어진다(아래 "실행" 참고).
 
 **잠금·Rate Limit(`AUTH-030`,`031`,`033`,`034`)과 장애 주입(`OPS-001`,`003`)도 추가했다** — 둘 다
-로컬 리허설 전용이며 기본으로는 실행되지 않는다(안전 장치, 보고서 §5.5·§5.7 그대로):
+로컬 리허설 전용이며 기본으로는 실행되지 않는다(안전 장치):
 
 - `api/scenarios/auth-lockout-ratelimit.js`는 `RUN_DESTRUCTIVE_AUTH_TESTS=true`를 명시해야 실행된다.
   `AUTH-030`/`031`(5회 실패 계정 잠금)은 이 케이스 전용 1회용 계정을 새로 만들어 쓴다.
@@ -64,10 +64,11 @@ doro-erp-e2e/
   직후 바로 확인하도록 다시 짜서, `AUTH-031`과 같은 기준(`401` 또는 `429` 둘 다 안전한 거절로 인정)을
   적용했다.
 
-잠금 단계 증가(`AUTH-032`)와 조건부 화면 반응(`FE-BE-010`~`015`)은 실제 clock 대기 비용이 크거나(전자)
-아직 손 안 대서(후자) 없다(보고서 §5.2, §5.5).
+잠금 단계 증가(`AUTH-032`)는 실제 clock 대기 비용이 커서(십수 분) 없다. 조건부 화면 반응
+(`FE-BE-010`~`015`, 배포 Frontend–Backend 종단 검증.md §4 "조건부 Browser 시나리오")은
+`browser/tests/fe-be-conditional.spec.ts`에 6개 전부 구현·검증 완료했다(아래 참고).
 
-`scripts/resolve-deployment-identity.mjs`도 추가했다 — 보고서 §7.3의 `deployment`(Revision) 4개 필드를
+`scripts/resolve-deployment-identity.mjs`도 추가했다 — `deployment`(Revision) 4개 필드를
 실제 AWS·GitOps에서 읽어와 `.env.deployment-identity.local`에 채운다. 자세한 내용은 바로 아래
 "Deployment Identity(Revision) 채우기" 참고.
 
@@ -107,9 +108,9 @@ JMESPath `contains()`가 타입 오류를 냈다 — `Aliases.Items || \`[]\``�
 - 실제 값은 `.env.deploy-e2e.local`(gitignore 대상) 또는 CI Secret Store에만 넣는다. 커밋 금지.
 - `AUTH_VALID_01` = `sample-store`/`owner` (정상 계정). 잠금·비활성·임시비밀번호 등 조건부 Fixture는 준비되는 대로 추가.
 - `FE-BE-003`/`SESS-001`이 공통으로 쓰는 비파괴 조회 API는 `GET /api/v1/orders`로 확정했다 — 로그인 성공 시 실제로 이동하는 `/pos/orders` 화면이 `onMounted`에서 자동 호출하고, Role 제한이 없다([PosOrdersView.vue](../Doro-ERP-Front/src/views/PosOrdersView.vue), [EdgeOrderController.java](../Doro-ERP-Service/apps/edge-api/src/main/java/com/dorosoft/erp/edge/presentation/EdgeOrderController.java)).
-- 배포 전용 실행에서는 Mock, `page.route().fulfill()`, 인증 Session 사전 주입을 금지한다(보고서 §8.1).
-- 결과 로그는 `reports/<runId>/results.jsonl`(browser) 및 `reports/<runId>.<suite>.results.jsonl`(api, k6는 하위 디렉터리를 자동 생성 못 해서 평평한 파일명을 씀)을 정본으로 하며, Password·Cookie·Session·Token 원문은 절대 기록하지 않는다(보고서 §4.2, §7.4).
-- **`AUTH_VALID_01` Rate Limit Bucket 주의**: `browser`와 `api` 스위트를 60초 이내에 이어서 돌리면 계정 Bucket(기본 용량 5)을 넘겨 뒤쪽 케이스가 잘못된 `429`로 실패할 수 있다. 자세한 내용과 대응은 [api/README.md](api/README.md#️-계정-rate-limit-bucket-주의-보고서-25) 참고.
+- 배포 전용 실행에서는 Mock, `page.route().fulfill()`, 인증 Session 사전 주입을 금지한다(배포 Frontend–Backend 종단 검증.md §2.1).
+- 결과 로그는 `reports/<runId>/results.jsonl`(browser) 및 `reports/<runId>.<suite>.results.jsonl`(api, k6는 하위 디렉터리를 자동 생성 못 해서 평평한 파일명을 씀)을 정본으로 하며, Password·Cookie·Session·Token 원문은 절대 기록하지 않는다(배포 Frontend–Backend 종단 검증.md §2, §8).
+- **`AUTH_VALID_01` Rate Limit Bucket 주의**: `browser`와 `api` 스위트를 60초 이내에 이어서 돌리면 계정 Bucket(기본 용량 5)을 넘겨 뒤쪽 케이스가 잘못된 `429`로 실패할 수 있다. 자세한 내용과 대응은 [api/README.md](api/README.md#️-계정-rate-limit-bucket-주의) 참고.
 
 ## 실행
 
@@ -163,8 +164,8 @@ Docker Compose로 6개 Spring Boot 서비스를 `prod` Profile + 자체 서명 T
 이건 실제 dev 배포(`doro.minseok.click`, CloudFront→ALB→EKS 실 인프라)를 대상으로 돌리는 것과 **다른 모드**다 —
 후자는 `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`을 `https://doro.minseok.click`으로 주고, AWS 자격증명으로
 `scripts/resolve-deployment-identity.mjs`를 먼저 돌려 Revision 정보를 채운 뒤 실행한다. **로컬 리허설은 스크립트
-자체 버그(셀렉터 깨짐·JSON 스키마 오타 등)를 미리 잡기 위한 것일 뿐, 보고서 §11.2의 "실제 배포 검증 완료"를
-대체하지 않는다** — 아래 "이 모드가 증명하지 못하는 것"을 반드시 읽을 것.
+자체 버그(셀렉터 깨짐·JSON 스키마 오타 등)를 미리 잡기 위한 것일 뿐, 배포 Frontend–Backend 종단 검증.md
+§9의 "완료 조건"을 대체하지 않는다** — 아래 "이 모드가 증명하지 못하는 것"을 반드시 읽을 것.
 
 ### 사전 준비: `Doro-ERP-Service`의 기존 Prod-like Docker 스택
 
@@ -242,8 +243,8 @@ Provisioning 직후 곧바로 `FE-BE-002~006`(로그인 5회 필요) 풀 스위�
 
 ### `doro-erp-e2e` 실행
 
-`DORO_ENVIRONMENT`가 `local`로 시작할 때만 `http://localhost`가 예외로 허용된다(그 외에는 보고서 §4.3에
-따라 여전히 HTTPS 강제, `browser/lib/env.ts`의 `requireOrigin` 참고). k6는 Vite를 거치지 않고 Edge
+`DORO_ENVIRONMENT`가 `local`로 시작할 때만 `http://localhost`가 예외로 허용된다(그 외에는 배포
+Frontend–Backend 종단 검증.md §2에 따라 여전히 HTTPS 강제, `browser/lib/env.ts`의 `requireOrigin` 참고). k6는 Vite를 거치지 않고 Edge
 Container를 직접 때리므로 `DORO_API_ORIGIN`은 그대로 HTTPS이고, 자체 서명 인증서라
 `--insecure-skip-tls-verify`가 추가로 필요하다(실제 dev/stage/prod에는 절대 쓰지 않음).
 
@@ -318,6 +319,6 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm
 `Doro-ERP-Service/environments/local/README.md`가 스스로 명시한 한계를 그대로 물려받는다: 실제
 IAM/Pod Identity, ALB·WAF, Security Group, Managed RDS·ElastiCache·SQS, 운영 인증서, CloudFront,
 Auto Scaling·Backup·Failover는 전혀 검증하지 않는다. 여기서 전부 PASS해도 `summary.json`의
-`environment`가 `local-prod-like`로 찍혀 있는 한, 보고서 §11.2의 "실제 배포 검증 완료"·`PASS_CONNECTED`와
-같은 의미가 아니다 — 기존 `tests/system`/`AuthControllerIntegrationTest` 같은 "CODE_COMPLETE" 레벨
+`environment`가 `local-prod-like`로 찍혀 있는 한, 배포 Frontend–Backend 종단 검증.md §9의 "완료 조건"·
+`PASS_CONNECTED`와 같은 의미가 아니다 — 기존 `tests/system`/`AuthControllerIntegrationTest` 같은 "CODE_COMPLETE" 레벨
 검증과 같은 급으로 취급한다.

@@ -4,7 +4,7 @@ import { makeRunId } from './lib/runContext'
 
 export default async function globalSetup(_config: FullConfig): Promise<void> {
   // env 검증 실패(ConfigError)는 여기서 그대로 throw해 테스트가 하나도 시작되기 전에
-  // 전체 실행을 중단한다 — 보고서 §4.1 "Frontend Origin 미승인 시 브라우저 E2E 전체 중단".
+  // 전체 실행을 중단한다 — 배포 Frontend–Backend 종단 검증.md §2 "Frontend Origin 미승인 시 브라우저 E2E 전체 중단".
   const env = loadDeployEnv()
   const runId = process.env.DORO_RUN_ID ?? makeRunId()
   // Playwright worker 프로세스는 globalSetup 종료 후 이 프로세스의 env를 물려받아 spawn되므로,

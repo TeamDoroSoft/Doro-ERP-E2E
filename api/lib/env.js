@@ -11,7 +11,7 @@ function requireEnv(name) {
 
 function requireHttps(name, value) {
   if (!value.startsWith('https://')) {
-    throw new Error(`${name}=${value} 는 HTTPS가 아닙니다 (ERROR_CONFIG, 보고서 §4.3 즉시 중단 조건)`)
+    throw new Error(`${name}=${value} 는 HTTPS가 아닙니다 (ERROR_CONFIG, 배포 Frontend–Backend 종단 검증.md §2 즉시 중단 조건)`)
   }
   return value.replace(/\/$/, '')
 }

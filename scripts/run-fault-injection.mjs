@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // OPS-001(Store Access 장애)·OPS-003(Redis 장애) — 로컬 Docker Prod-like 스택 전용. 실제로
 // 컨테이너를 멈췄다 다시 올린다. 이 스크립트를 실행하는 것 자체가 이미 "승인된 점검"이어야
-// 한다(보고서 §5.7) — 그래서 --confirm 플래그를 명시적으로 요구하고, 컨테이너를 멈춘 뒤에는
-// 무슨 일이 있어도(예외 발생 포함) 다시 올리는 것을 try/finally로 보장한다.
+// 한다(배포 Frontend–Backend 종단 검증.md §6의 운영 담당자 승인 원칙과 같은 정신) — 그래서
+// --confirm 플래그를 명시적으로 요구하고, 컨테이너를 멈춘 뒤에는 무슨 일이 있어도(예외 발생
+// 포함) 다시 올리는 것을 try/finally로 보장한다.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0' // 로컬 자체 서명 인증서 전용 스크립트
 
 import { execFileSync } from 'node:child_process'
@@ -35,7 +36,7 @@ if (!config) {
 if (!process.argv.includes('--confirm')) {
   console.error(
     `${opsId}는 실제로 ${config.label} 컨테이너(${config.container})를 멈췄다 올립니다. ` +
-      '승인된 점검 시간이 맞으면 --confirm을 붙여 다시 실행하세요 (보고서 §5.7).',
+      '승인된 점검 시간이 맞으면 --confirm을 붙여 다시 실행하세요.',
   )
   process.exit(2)
 }

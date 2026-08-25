@@ -17,7 +17,7 @@ export const options = {
 // Provisioning 자격증명이 있을 때만 추가되므로 그때는 뒤에 이어 붙인다(README 참고).
 //
 // SESS-006/007: /api/v1/auth/reauthenticate(ADR-02-003/011, "중요 관리 작업 전 15분 재인증 창"
-// 갱신). 원래 보고서 §5.6엔 없던 항목 — Doro-ERP-Service의 최근 tests/system 커밋을 검토하다
+// 갱신). 원래 SESS-* 카탈로그엔 없던 항목 — Doro-ERP-Service의 최근 tests/system 커밋을 검토하다
 // 이 Endpoint가 Edge HMAC 보호 대상이 됐다는 걸 알게 됐고, 실제로 보니 실패 카운트가 로그인
 // 잠금(AUTH-030류)과 별개로 Session에만 종속된 걸 확인해서 추가했다.
 
@@ -31,7 +31,7 @@ export default function () {
   const protectedUrl = `${env.apiOrigin}${PROTECTED_PATH}`
   const account = env.authValid01
 
-  // 이 스크립트 하나로 AUTH_VALID_01 실계정 로그인을 1회만 소비한다(§2.5 Rate Limit Bucket).
+  // 이 스크립트 하나로 AUTH_VALID_01 실계정 로그인을 1회만 소비한다(Rate Limit Bucket).
   // auth-mandatory.js와 60초 이내에 연달아 돌리지 말 것 — README 참고.
   const jar = freshJar()
   const loginRes = postJson(
@@ -207,8 +207,8 @@ export default function () {
 
     // SESS-001에서 로그인 성공한 jar를 그대로 재사용하되 SESSION 값만 깨뜨린다 — XSRF-TOKEN 등
     // 나머지 Cookie는 그대로 둬서 "SESSION만 변조된" 상황을 정확히 재현한다. 형식 자체가 깨진 값을
-    // 써서 Redis 조회 실패 경로와 Parser 실패 경로 둘 다 건드릴 가능성을 높인다(보고서 §5.6:
-    // "Redis·Parser 상세 비노출" — 둘 중 하나만 확인하면 다른 경로의 누출을 놓칠 수 있다).
+    // 써서 Redis 조회 실패 경로와 Parser 실패 경로 둘 다 건드릴 가능성을 높인다("Redis·Parser
+    // 상세 비노출" — 둘 중 하나만 확인하면 다른 경로의 누출을 놓칠 수 있다).
     const cookies = jar.cookiesForURL(protectedUrl)
     const realSession = cookies['SESSION'] && cookies['SESSION'][0]
     const tamperedSession = `${realSession ? realSession.slice(0, -4) : ''}%%%%garbage-not-base64%%%%`
@@ -253,7 +253,7 @@ export default function () {
       return
     }
 
-    // AUTH_VALID_01(§2.5 Bucket)이 아니라 이 케이스 전용 1회용 테넌트+OWNER를 새로 만든다.
+    // AUTH_VALID_01(Rate Limit Bucket)이 아니라 이 케이스 전용 1회용 테넌트+OWNER를 새로 만든다.
     const fixture = {
       tenantCode: `e2e-sess-${randomToken().slice(0, 12)}`,
       tenantName: 'Doro E2E SESS Fixture',

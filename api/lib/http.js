@@ -1,6 +1,6 @@
 import http from 'k6/http'
 
-// §4.2: "각 API 테스트는 독립 Cookie Jar"를 쓴다. k6 기본은 VU 공용 Jar라서 케이스마다 새로 만든다.
+// 각 API 테스트는 독립 Cookie Jar를 쓴다. k6 기본은 VU 공용 Jar라서 케이스마다 새로 만든다.
 export function freshJar() {
   return new http.CookieJar()
 }

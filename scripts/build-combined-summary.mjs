@@ -58,7 +58,7 @@ const deploymentIdentityComplete =
       d.storeAccessRevision !== 'unknown',
   )
 
-// 보고서 §6.1의 FRONT_BACK_CONNECTED 전체 판정식은 deploymentIdentityComplete·
+// 배포 Frontend–Backend 종단 검증.md §7의 PASS_CONNECTED 전체 판정식은 deploymentIdentityComplete·
 // protectedApiReachedFromBrowser·requestCorrelationVerified·browserErrorsAbsent(Console/Page
 // Error 허용 목록 포함)까지 요구한다. 이 스크립트는 그중 "필수 케이스 전부 PASS + 민감정보
 // 유출 0건"만 보는 좁은 판정이다 — Revision 조회와 Console/Page Error 허용 목록이 아직 없어서
@@ -79,9 +79,9 @@ if (!deploymentIdentityComplete)
       '정보 제공용일 뿐 frontBackConnected 게이트에는 반영하지 않았다.',
   )
 caveats.push(
-  '보고서 §6.1의 protectedApiReachedFromBrowser·requestCorrelationVerified·browserErrorsAbsent(Console/Page ' +
-    'Error 허용 목록)는 아직 이 집계에 반영하지 않았다 — frontBackConnected는 "필수 케이스 전부 PASS + ' +
-    '민감정보 유출 0건"만 보는 좁은 판정이며 §11.2의 "실제 배포 검증 완료" 선언 조건 전체를 대체하지 않는다.',
+  '배포 Frontend–Backend 종단 검증.md §7의 protectedApiReachedFromBrowser·requestCorrelationVerified·' +
+    'browserErrorsAbsent(Console/Page Error 허용 목록)는 아직 이 집계에 반영하지 않았다 — frontBackConnected는 ' +
+    '"필수 케이스 전부 PASS + 민감정보 유출 0건"만 보는 좁은 판정이며 같은 문서 §9의 완료 조건 전체를 대체하지 않는다.',
 )
 
 const combined = {

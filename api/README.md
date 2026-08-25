@@ -51,7 +51,8 @@ DORO_API_ORIGIN=https://localhost:8080 \
 ## `AUTH-030`/`031`/`033`/`034`: 잠금·Rate Limit (기본 비활성)
 
 `api/scenarios/auth-lockout-ratelimit.js`는 `RUN_DESTRUCTIVE_AUTH_TESTS=true`를 명시적으로 줘야
-실행된다(그 외엔 4개 케이스 전부 `SKIP_PRECONDITION`) — 보고서 §5.5가 요구하는 안전장치 그대로다.
+실행된다(그 외엔 4개 케이스 전부 `SKIP_PRECONDITION`) — 배포 Frontend–Backend 종단 검증.md §2가 요구하는
+"잠금·Rate Limit은 전용 Fixture와 격리 Source가 있을 때만 실행" 안전장치 그대로다.
 
 ```bash
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
@@ -74,7 +75,7 @@ node api/lib/build-report.mjs /tmp/lockout.log auth-lockout-ratelimit AUTH-030,A
 **`429 AUTH_RATE_LIMITED`**로 막힌다 — Bucket이 5번째 실패 시점에 이미 0으로 소진돼 있기 때문이다.
 로컬 기본값(용량 5/분당 1)이 운영 기본값과 같으므로(`STORE_ACCESS_IDENTITY_RATE_LIMIT_ACCOUNT_CAPACITY`
 기본값) 운영에서도 같은 현상이 예상된다. 두 응답 모두 "요청을 안전하게 거절하고 잠금 상세를 노출하지
-않는다"는 §2.4/§2.5의 실제 의도는 만족하므로, `AUTH-031`의 판정 기준은 정확히 `401`이 아니라
+않는다"는 실제 의도는 만족하므로, `AUTH-031`의 판정 기준은 정확히 `401`이 아니라
 "`200`이 아니고, 안전한 Problem 응답(`code` 존재)이고, 내부 정보가 없는지"로 잡았다.
 
 ## `AUTH-011`~`015`: 계정 존재 비노출
@@ -130,15 +131,16 @@ node scripts/run-fault-injection.mjs OPS-001 --confirm   # Store Access 정지 �
 node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 → 재기동 → 401 복구
 ```
 
-`--confirm` 없이 실행하면 아무 컨테이너도 건드리지 않고 사용법만 출력하고 끝난다(보고서 §5.7의
-"운영 담당자 승인" 안전장치를 로컬 스크립트 차원에서 흉내낸 것). 컨테이너를 멈춘 뒤에는 무슨 일이
+`--confirm` 없이 실행하면 아무 컨테이너도 건드리지 않고 사용법만 출력하고 끝난다(배포 Frontend–Backend
+종단 검증.md §6의 "장애 주입은 전용 Stage 또는 승인된 점검 시간에 운영 담당자가 수행" 안전장치를 로컬
+스크립트 차원에서 흉내낸 것). 컨테이너를 멈춘 뒤에는 무슨 일이
 있어도(예외 발생 포함) `finally`에서 다시 올리는 것을 보장한다. 결과는 `reports/<runId>.ops-00N.results.jsonl`에
 쌓인다(`build-report.mjs`를 거치지 않고 스크립트가 직접 씀 — 케이스가 하나뿐이라 후처리가 필요 없다).
 
 2026-08-24에 로컬 Docker Prod-like 스택에서 둘 다 실행해 확인: 컨테이너 정지 → `503 LOGIN_UNAVAILABLE`
 (내부 정보 비노출) → 컨테이너 재기동 → Health `UP` → 로그인 요청 다시 `401`(정상 처리 재개)까지 PASS.
 
-## ⚠️ 계정 Rate Limit Bucket 주의 (보고서 §2.5)
+## ⚠️ 계정 Rate Limit Bucket 주의
 
 `AUTH_VALID_01`(`sample-store`/`owner`) 계정의 서버측 Rate Limit Bucket은 **기본 용량 5회, 분당 1회 보충**이다.
 이 저장소의 스크립트들은 실계정 로그인 호출 수를 아래처럼 최소화해뒀다.
@@ -182,9 +184,9 @@ browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 �
   `lib/http.js`의 `cookieAttrs()`가 원본 `Set-Cookie` 헤더 문자열에서 정규식으로 최선의 노력으로
   추출하며, 못 찾으면 `null`을 반환한다. 결과 JSONL의 `assertions.sameSiteCheckable`이 `false`면
   이 실행에서는 SameSite를 확인하지 못했다는 뜻이다.
-- 보고서 §7.2가 요구하는 5단계 종료 코드(0/1/2/3/4)는 아직 없다. 지금은 k6 자체의 `checks` 임계치
+- 세분화된 5단계 종료 코드(0/1/2/3/4)는 아직 없다. 지금은 k6 자체의 `checks` 임계치
   (`rate==1`)와 `build-report.mjs`의 exit code(실패 케이스가 있으면 1)로 하나라도 실패하면 비정상
   종료하는 수준만 구현돼 있다. `resultCode`별 세분화된 종료 코드가 필요하면 후속 작업이 남아 있다.
 - `AUTH-032`(잠금 단계 증가)·`AUTH-035`(보충 시간 후 재요청)는 실제 clock 대기 비용이 커서,
-  `OPS-002`/`004`/`005`는 WAF·ALB·Pod 단위 실제 인프라가 전제라 로컬로 의미 있게 재현이 안 돼서
-  아직 구현하지 않았다(보고서 §5.5, §5.7).
+  `OPS-002`(배포 Frontend–Backend 종단 검증.md §5)·`OPS-004`/`005`(같은 문서 §6)는 WAF·ALB·Pod 단위
+  실제 인프라가 전제라 로컬로 의미 있게 재현이 안 돼서 아직 구현하지 않았다.
