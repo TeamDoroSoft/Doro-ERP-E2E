@@ -1,0 +1,14 @@
+{
+  "name": "doro-erp-e2e-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.4"
+  }
+}

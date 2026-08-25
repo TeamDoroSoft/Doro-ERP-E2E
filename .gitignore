@@ -1,0 +1,20 @@
+node_modules/
+
+# Local secrets — never commit actual account/API credentials
+.env
+.env.*.local
+
+# Playwright artifacts
+browser/playwright-report/
+browser/test-results/
+
+# k6 artifacts
+api/summary.json
+
+# Run output (JSONL/summary/junit/screenshots) — see shared/result-schema.md
+reports/*
+!reports/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
