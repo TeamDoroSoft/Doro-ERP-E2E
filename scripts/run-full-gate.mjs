@@ -71,6 +71,14 @@ export async function runFullGate() {
 
   steps.push(
     await runStep('OPS-002 (실 배포 EKS Provider 미승인 응답, 미검증)', () => {
+      if (isLocalRehearsal) {
+        console.log('  ⚠ DORO_ENVIRONMENT가 로컬 리허설 대상입니다 — OPS-002를 이번 실행에서 SKIP합니다.')
+        console.log(
+          '    scripts/verify-provider-malformed-response.mjs는 kubectl로 실 EKS의 store-access-api Service를 ' +
+            '건드리는 실 배포 전용 스크립트라 로컬 리허설 대상에는 실행할 이유가 없습니다.',
+        )
+        return { ok: true, skipped: true }
+      }
       if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
         guardFlag(
           'RUN_FAULT_INJECTION_TESTS',
@@ -87,6 +95,14 @@ export async function runFullGate() {
 
   steps.push(
     await runStep('OPS-005 (실 배포 EKS 일부 Pod 비정상, 미검증)', () => {
+      if (isLocalRehearsal) {
+        console.log('  ⚠ DORO_ENVIRONMENT가 로컬 리허설 대상입니다 — OPS-005를 이번 실행에서 SKIP합니다.')
+        console.log(
+          '    scripts/verify-partial-pod-failure.mjs는 kubectl로 실 EKS의 store-access-api Pod를 ' +
+            'delete하는 실 배포 전용 스크립트라 로컬 리허설 대상에는 실행할 이유가 없습니다.',
+        )
+        return { ok: true, skipped: true }
+      }
       if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
         guardFlag(
           'RUN_FAULT_INJECTION_TESTS',
