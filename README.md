@@ -138,7 +138,7 @@ DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_
 DORO_AUTH_VALID_01_PASSWORD=... PROVISIONING_ORIGIN=... \
 STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-004,SESS-005
 
 # 5) 세 결과를 하나의 판정으로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
@@ -153,9 +153,18 @@ node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
 
 ## 로컬 Docker Prod-like 리허설 모드
 
-실제 dev 배포(`doro.minseok.click`)에 돌리기 전에, 스크립트 자체 버그(셀렉터 깨짐·JSON 스키마 오타 등)를 로컬에서
-먼저 잡기 위한 모드다. **이건 보고서 §11.2의 "실제 배포 검증 완료"를 대체하지 않는다** — 아래 "이 모드가
-증명하지 못하는 것"을 반드시 읽을 것.
+### 용어 정의 — "로컬 테스트"란
+
+이 문서에서 "로컬 테스트"/"로컬 리허설"은 **정확히** 다음을 뜻한다: `Doro-ERP-Service/environments/local`의
+Docker Compose로 6개 Spring Boot 서비스를 `prod` Profile + 자체 서명 TLS로 내 컴퓨터에 띄우고, 그걸 대상으로
+`doro-erp-e2e`를 실행하는 것. 대상 Origin은 `https://localhost:8080`(Edge)이고, 계정은 `provision-local-rehearsal-account.mjs`가
+그때그때 만든 1회용 테넌트다.
+
+이건 실제 dev 배포(`doro.minseok.click`, CloudFront→ALB→EKS 실 인프라)를 대상으로 돌리는 것과 **다른 모드**다 —
+후자는 `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`을 `https://doro.minseok.click`으로 주고, AWS 자격증명으로
+`scripts/resolve-deployment-identity.mjs`를 먼저 돌려 Revision 정보를 채운 뒤 실행한다. **로컬 리허설은 스크립트
+자체 버그(셀렉터 깨짐·JSON 스키마 오타 등)를 미리 잡기 위한 것일 뿐, 보고서 §11.2의 "실제 배포 검증 완료"를
+대체하지 않는다** — 아래 "이 모드가 증명하지 못하는 것"을 반드시 읽을 것.
 
 ### 사전 준비: `Doro-ERP-Service`의 기존 Prod-like Docker 스택
 
@@ -174,21 +183,33 @@ docker compose -f environments/local/docker-compose.apps.yml -f environments/loc
 
 ### Frontend: Vite dev 서버로 연결 (가벼운 방식 — Dockerfile 새로 안 만듦)
 
-Vite의 proxy(`http-proxy`)는 `NODE_TLS_REJECT_UNAUTHORIZED=0`을 무시하고 자체 서명 인증서를 거부한다
-(`self-signed certificate` 에러 — 로컬 리허설에서 실제로 재현·확인). 대신 `tls-init` 컨테이너가 만든
-인증서를 뽑아 Node에 신뢰할 CA로 알려준다 — TLS 검증 자체를 끄는 것보다 정확하고, 이 방법은 실제로
-프록시가 정상 동작하는 것까지 확인했다.
+Vite dev 서버의 proxy(`/api` → Edge)가 자체 서명 인증서를 거부하는 문제가 있다. 두 가지를 시도해서 실측한 결과:
+
+- **`NODE_EXTRA_CA_CERTS`로 `tls-init` 컨테이너 인증서를 신뢰 CA로 등록** — `docker cp`로 뽑은 인증서가
+  컨테이너 실제 인증서와 바이트까지 동일함을 확인했는데도, `NODE_EXTRA_CA_CERTS`를 붙이면 여전히
+  `self-signed certificate` 에러가 남는다(Windows/Git-Bash 환경에서 재현, 근본 원인 미해결 — 경로 표기
+  문제로 의심했으나 Windows 경로로 바꿔도 동일). **이 방법은 이 환경에서 신뢰하지 말 것.**
+- **`NODE_TLS_REJECT_UNAUTHORIZED=0`(Node 프로세스 전역)** — Vite 8의 proxy 엔진이 이 값을 안 봐서 역시
+  실패한다(전역 TLS 검증 우회가 프록시 내부 HTTPS 클라이언트까지는 안 미침).
+
+**실제로 동작을 확인한 유일한 방법은 `Doro-ERP-Front/vite.config.ts`의 proxy 옵션에 `secure: false`를
+추가하는 것이다** — Vite proxy(`http-proxy`)가 자체 서명 대상을 위해 제공하는 전용 옵션이라 위 두 방법과
+달리 실제로 먹힌다. 이건 **로컬 리허설 전용 임시 변경**이라 `Doro-ERP-Front`에 커밋하지 않는다 —
+`doro-erp-e2e`는 이 폴더 밖 코드를 건드리지 않는다는 원칙(이 문서 상단 참고) 때문에, 리허설을 시작할 때
+수동으로 추가했다가 끝나면 반드시 되돌린다.
 
 ```bash
-docker cp doro-erp-local-apps-edge-api-1:/tls/server.crt /tmp/doro-prod-like-server.crt
-
 cd ../Doro-ERP-Front
-NODE_EXTRA_CA_CERTS=/tmp/doro-prod-like-server.crt VITE_EDGE_PROXY_TARGET=https://localhost:8080 npm run dev
-```
 
-컨테이너 이름은 `docker compose ps`로 확인 — `docker-compose.apps.yml`의 project 이름(`doro-erp-local-apps`)이
-접두어로 붙는다. `NODE_EXTRA_CA_CERTS`도 이 프로세스 안에서만 유효하므로 실제 dev/stage/prod Origin에는
-영향이 없지만, 그래도 로컬 리허설 전용으로만 쓴다.
+# vite.config.ts의 server.proxy['/api'] 블록에 아래 한 줄을 "임시로" 추가한다.
+#   secure: edgeProxyTarget.startsWith('https://localhost') ? false : true,
+# (자체 서명 대상일 때만 검증을 끄고, 실제 dev/stage/prod Origin에는 영향 없음)
+
+VITE_EDGE_PROXY_TARGET=https://localhost:8080 npm run dev
+
+# 리허설이 끝나면 반드시 원복한다 — 이 변경을 Doro-ERP-Front에 커밋하지 않는다.
+git checkout -- vite.config.ts
+```
 
 ### 계정 준비: `scripts/provision-local-rehearsal-account.mjs`
 
@@ -251,7 +272,7 @@ STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
 DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/session-flow.js \
   > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-004,SESS-005
 
 # 세 결과를 하나로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"

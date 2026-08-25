@@ -11,12 +11,19 @@ export interface DeploymentIdentity {
   storeAccessRevision: string
 }
 
+export interface ProvisioningConfig {
+  origin: string | null
+  username: string | null
+  password: string | null
+}
+
 export interface DeployEnv {
   environment: string
   frontendOrigin: string
   apiOrigin: string
   authValid01: AccountFixture
   deployment: DeploymentIdentity
+  provisioning: ProvisioningConfig
 }
 
 export class ConfigError extends Error {
@@ -76,6 +83,13 @@ export function loadDeployEnv(): DeployEnv {
       cloudFrontDistributionId: process.env.DORO_CLOUDFRONT_DISTRIBUTION_ID ?? 'unknown',
       edgeRevision: process.env.DORO_EDGE_REVISION ?? 'unknown',
       storeAccessRevision: process.env.DORO_STORE_ACCESS_REVISION ?? 'unknown',
+    },
+    // FE-BE-010/014 전용 — 없으면 그 케이스들만 SKIP_PRECONDITION (lib/provisioning.ts 참고).
+    // api/lib/env.js의 같은 필드와 대응된다.
+    provisioning: {
+      origin: process.env.PROVISIONING_ORIGIN ?? null,
+      username: process.env.STORE_ACCESS_PROVISIONING_USERNAME ?? null,
+      password: process.env.STORE_ACCESS_PROVISIONING_PASSWORD ?? null,
     },
   }
 }

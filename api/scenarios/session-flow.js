@@ -12,8 +12,9 @@ export const options = {
   },
 }
 
-// 실행 뒤 `node api/lib/build-report.mjs <log> session-flow SESS-001,SESS-002`로 summary.json을
-// 만든다 — 이 스크립트가 다루는 필수 케이스 ID (README 참고).
+// 실행 뒤 `node api/lib/build-report.mjs <log> session-flow SESS-001,SESS-002,SESS-003`로 summary.json을
+// 만든다 — 이 스크립트가 다루는 필수 케이스 ID (README 참고). SESS-004/005는 Provisioning
+// 자격증명이 있을 때만 추가되므로 그때는 뒤에 이어 붙인다(README 참고).
 
 // FE-BE-003이 실제 화면에서 로그인 직후 자동으로 호출하는 것과 같은 비파괴 조회 API를
 // 그대로 쓴다 (Role 제한 없음 — EdgeOrderController.java, OrderController.java 확인 완료).
@@ -84,6 +85,42 @@ export default function () {
       observed: { protectedApiPath: PROTECTED_PATH, protectedApiStatus: res.status },
       requestId: header(res, 'X-Request-Id'),
       assertions: { status401: pass, code: body.code || null },
+      errorClass: pass ? null : 'ASSERTION_MISMATCH',
+    })
+  })
+
+  group('SESS-003: 변조된 SESSION으로 같은 API 호출', () => {
+    const startedAt = new Date().toISOString()
+    const t0 = Date.now()
+
+    // SESS-001에서 로그인 성공한 jar를 그대로 재사용하되 SESSION 값만 깨뜨린다 — XSRF-TOKEN 등
+    // 나머지 Cookie는 그대로 둬서 "SESSION만 변조된" 상황을 정확히 재현한다. 형식 자체가 깨진 값을
+    // 써서 Redis 조회 실패 경로와 Parser 실패 경로 둘 다 건드릴 가능성을 높인다(보고서 §5.6:
+    // "Redis·Parser 상세 비노출" — 둘 중 하나만 확인하면 다른 경로의 누출을 놓칠 수 있다).
+    const cookies = jar.cookiesForURL(protectedUrl)
+    const realSession = cookies['SESSION'] && cookies['SESSION'][0]
+    const tamperedSession = `${realSession ? realSession.slice(0, -4) : ''}%%%%garbage-not-base64%%%%`
+    jar.set(protectedUrl, 'SESSION', tamperedSession)
+
+    const res = getJson(protectedUrl, { jar })
+    const body = parseProblem(res)
+    const bodyText = JSON.stringify(body).toLowerCase()
+    // 내부 구현 상세(Redis 키 이름, 예외 클래스, 스택트레이스 등)가 새면 안 된다 — SESS-002와
+    // 같은 401 Shape(제네릭 UNAUTHENTICATED 계열)인지, 그리고 아래 금칙어가 없는지 확인한다.
+    const leakedKeywords = ['redis', 'deserializ', 'exception', 'stacktrace', 'nullpointer', 'com.dorosoft', 'at java.', 'at org.springframework']
+    const noInternalLeak = !leakedKeywords.some((kw) => bodyText.includes(kw))
+    const pass = res.status === 401 && noInternalLeak
+    check(null, { 'SESS-003 401 & 내부 상세 비노출': () => pass })
+    record(env, {
+      testCaseId: 'SESS-003',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
+      expected: { requestPath: PROTECTED_PATH, httpStatus: 401 },
+      observed: { protectedApiPath: PROTECTED_PATH, protectedApiStatus: res.status },
+      requestId: header(res, 'X-Request-Id'),
+      assertions: { status401: res.status === 401, noInternalLeak, code: body.code || null },
       errorClass: pass ? null : 'ASSERTION_MISMATCH',
     })
   })
