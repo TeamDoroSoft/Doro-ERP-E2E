@@ -71,9 +71,17 @@ export function runK6Scenario(scenarioRelPath, suiteName, caseIds) {
   const runId = process.env.DORO_RUN_ID
   const rawLogPath = resolve(REPORTS_DIR, `${runId}.${suiteName}.raw.log`)
 
+  // 로컬 리허설(자체 서명 TLS) 대상일 때만 검증을 끈다 — 실 dev/stage/prod Origin은 유효한
+  // 인증서를 쓰므로 이 플래그가 전혀 필요 없고, 붙이면 오히려 실 배포 검증을 약화시킨다
+  // (README "로컬 Docker Prod-like 리허설 모드"의 수동 명령과 같은 조건).
+  const isLocalRehearsal = (process.env.DORO_ENVIRONMENT ?? '').startsWith('local')
+  const k6Args = isLocalRehearsal
+    ? ['run', '--insecure-skip-tls-verify', '--log-format=raw', scenarioRelPath]
+    : ['run', '--log-format=raw', scenarioRelPath]
+
   let k6Status = 0
   try {
-    const output = execFileSync('k6', ['run', '--log-format=raw', scenarioRelPath], {
+    const output = execFileSync('k6', k6Args, {
       cwd: REPO_ROOT,
       env: process.env,
       encoding: 'utf8',
