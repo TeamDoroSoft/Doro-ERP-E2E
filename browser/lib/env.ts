@@ -11,15 +11,17 @@ export interface DeploymentIdentity {
   storeAccessRevision: string
 }
 
-export interface ProvisioningConfig {
-  origin: string | null
-  username: string | null
-  password: string | null
+export interface PasswordRotateAccountFixture {
+  tenantCode: string
+  loginId: string
+  passwordA: string
+  passwordB: string
 }
 
-// Provisioning API 대신 미리 만들어둔 전용 계정 6개 — Docs/Specifications/운영·배포/
-// "배포 검증용 테스트 계정 요청.md"에 정확한 요구사항을 정리해뒀다. 하나라도 env에 없으면
-// null — 호출부는 Provisioning 경로로 자연스럽게 폴백한다(있으면 정적 계정을 우선한다).
+// 실 배포 대상 테넌트 DB에 Provisioning API로 계정을 만들지 않기로 했다 — 미리 만들어둔 전용
+// 계정 8개만 쓴다. Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"에 정확한
+// 요구사항을 정리해뒀다. 하나라도 env에 없으면 null — 호출부는 해당 케이스를
+// SKIP_PRECONDITION으로 건너뛴다(Provisioning 폴백 없음).
 export interface StaticAccounts {
   lockout: AccountFixture | null // AUTH_LOCKOUT_01 — AUTH-015/030/031
   inactiveEmployee: AccountFixture | null // AUTH_INACTIVE_EMPLOYEE_01 — AUTH-013
@@ -27,6 +29,8 @@ export interface StaticAccounts {
   roleOwner: AccountFixture | null // AUTH_ROLE_OWNER_01 — FE-BE-014
   roleManager: AccountFixture | null // AUTH_ROLE_MANAGER_01 — FE-BE-014
   roleStaff: AccountFixture | null // AUTH_ROLE_STAFF_01 — FE-BE-014
+  tempPassword: AccountFixture | null // AUTH_TEMP_PASSWORD_01 — FE-BE-010, SESS-004
+  passwordRotate: PasswordRotateAccountFixture | null // AUTH_PASSWORD_ROTATE_01 — SESS-005
 }
 
 export interface DeployEnv {
@@ -35,7 +39,6 @@ export interface DeployEnv {
   apiOrigin: string
   authValid01: AccountFixture
   deployment: DeploymentIdentity
-  provisioning: ProvisioningConfig
   staticAccounts: StaticAccounts
 }
 
@@ -80,6 +83,17 @@ function optionalAccount(prefix: string): AccountFixture | null {
   return { tenantCode, loginId, password }
 }
 
+// AUTH_PASSWORD_ROTATE_01 전용 — 비밀번호가 A/B 두 값이라 optionalAccount()로는 못 읽는다
+// (SESS-005가 매번 현재 비밀번호를 스스로 판별해 반대쪽으로 바꾼다).
+function optionalPasswordRotateAccount(prefix: string): PasswordRotateAccountFixture | null {
+  const tenantCode = process.env[`DORO_${prefix}_TENANT_CODE`]
+  const loginId = process.env[`DORO_${prefix}_LOGIN_ID`]
+  const passwordA = process.env[`DORO_${prefix}_PASSWORD_A`]
+  const passwordB = process.env[`DORO_${prefix}_PASSWORD_B`]
+  if (!tenantCode || !loginId || !passwordA || !passwordB) return null
+  return { tenantCode, loginId, passwordA, passwordB }
+}
+
 export function loadDeployEnv(): DeployEnv {
   const environment = process.env.DORO_ENVIRONMENT ?? 'dev'
   const frontendOrigin = requireOrigin('DORO_FRONTEND_ORIGIN', required('DORO_FRONTEND_ORIGIN'), environment)
@@ -107,13 +121,6 @@ export function loadDeployEnv(): DeployEnv {
       edgeRevision: process.env.DORO_EDGE_REVISION ?? 'unknown',
       storeAccessRevision: process.env.DORO_STORE_ACCESS_REVISION ?? 'unknown',
     },
-    // FE-BE-010/014 전용 — 없으면 그 케이스들만 SKIP_PRECONDITION (lib/provisioning.ts 참고).
-    // api/lib/env.js의 같은 필드와 대응된다.
-    provisioning: {
-      origin: process.env.PROVISIONING_ORIGIN ?? null,
-      username: process.env.STORE_ACCESS_PROVISIONING_USERNAME ?? null,
-      password: process.env.STORE_ACCESS_PROVISIONING_PASSWORD ?? null,
-    },
     staticAccounts: {
       lockout: optionalAccount('AUTH_LOCKOUT_01'),
       inactiveEmployee: optionalAccount('AUTH_INACTIVE_EMPLOYEE_01'),
@@ -121,6 +128,8 @@ export function loadDeployEnv(): DeployEnv {
       roleOwner: optionalAccount('AUTH_ROLE_OWNER_01'),
       roleManager: optionalAccount('AUTH_ROLE_MANAGER_01'),
       roleStaff: optionalAccount('AUTH_ROLE_STAFF_01'),
+      tempPassword: optionalAccount('AUTH_TEMP_PASSWORD_01'),
+      passwordRotate: optionalPasswordRotateAccount('AUTH_PASSWORD_ROTATE_01'),
     },
   }
 }

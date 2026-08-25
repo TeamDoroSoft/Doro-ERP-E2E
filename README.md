@@ -27,9 +27,10 @@ doro-erp-e2e/
 ## 구현 범위 (현재)
 
 **필수 Gate + SESS-004/005** — `browser/tests/fe-be-mandatory.spec.ts`(`FE-BE-001`~`006`), `api/scenarios/auth-mandatory.js`(`AUTH-001`~`004`,`010`,`020`~`024`), `api/scenarios/session-flow.js`(`SESS-001`,`002`,`003`,`004`,`005`,`006`,`007`).
-`SESS-004`/`005`는 `AUTH_VALID_01`이 아니라 이 케이스 전용 1회용 테넌트+OWNER를 Provisioning API로 직접 만들어서 쓴다
-(`api/lib/provisioning.js`) — Provisioning 자격증명(`PROVISIONING_ORIGIN`, `STORE_ACCESS_PROVISIONING_USERNAME/PASSWORD`)이
-없으면 이 두 케이스만 `SKIP_PRECONDITION`으로 건너뛴다(실 AWS 대상 실행처럼 일부러 안 주는 경우 대비).
+`SESS-004`/`005`는 `AUTH_VALID_01`이 아니라 전용 정적 계정을 쓴다 — `SESS-004`는 `AUTH_TEMP_PASSWORD_01`,
+`SESS-005`는 `AUTH_PASSWORD_ROTATE_01`(비밀번호 A/B 두 값 중 지금 어느 쪽이 현재 값인지 스스로 판별해
+반대쪽으로 바꾼다). 실 배포 대상 테넌트 DB에 Provisioning API로 계정을 만들지 않기로 했다 — 해당
+정적 계정이 없으면 그 케이스만 `SKIP_PRECONDITION`으로 건너뛴다(아래 "주의사항" 참고).
 `SESS-006`/`007`은 Edge-HMAC 보호 대상이 된 `/api/v1/auth/reauthenticate`의 성공 시 Session 회전과
 5회 실패 시 계정 잠금 없이 해당 Session만 무효화되는 동작을 각각 검증한다.
 
@@ -43,8 +44,8 @@ doro-erp-e2e/
 실행되지 않는다(안전 장치):
 
 - `api/scenarios/auth-lockout-ratelimit.js`는 `RUN_DESTRUCTIVE_AUTH_TESTS=true`를 명시해야 실행된다.
-  `AUTH-030`/`031`(5회 실패 계정 잠금)은 `AUTH_LOCKOUT_01` 정적 계정을 우선하고, 없으면 이 케이스
-  전용 1회용 계정을 새로 만들어 쓴다.
+  `AUTH-030`/`031`(5회 실패 계정 잠금)은 `AUTH_LOCKOUT_01` 정적 계정을 쓴다 — 없으면 폴백 없이
+  `SKIP_PRECONDITION`이다.
   **실측으로 확인한 중요한 사실**: 계정 Rate Limit Bucket 용량(5)이 잠금 임계치(5회)와 정확히 같아서,
   "잠금 직후" 요청은 문서가 적은 `401`이 아니라 `429 AUTH_RATE_LIMITED`로 막힌다(Bucket이 먼저
   소진되기 때문) — 둘 다 "안전하게 거절, 상세 비노출"이라는 실제 의도는 만족하므로 `AUTH-031`은
@@ -65,7 +66,7 @@ doro-erp-e2e/
 
 **계정 존재 비노출(`AUTH-011`~`015`)도 추가했다** — `api/scenarios/auth-account-nonexposure.js`.
 `AUTH-011`/`012`(존재하지 않는 loginId/tenantCode)는 Fixture가 필요 없어 항상 실행되고,
-`AUTH-013`(INACTIVE 직원)/`014`(INACTIVE 테넌트)는 정적 계정 또는 `provisioningAvailable`이 있으면 실행되고,
+`AUTH-013`(INACTIVE 직원)/`014`(INACTIVE 테넌트)는 각각 전용 정적 계정이 있으면 실행되고,
 `AUTH-015`(잠금 상태)는 `auth-lockout-ratelimit.js`와 같은 이유로 `RUN_DESTRUCTIVE_AUTH_TESTS=true`도
 추가로 요구한다. 구현 중 실제 버그 3개를 잡았다:
 - `PasswordPolicyValidator`가 비밀번호에 `loginId`("owner")가 부분 문자열로 포함되면 거부한다 —
@@ -80,19 +81,27 @@ doro-erp-e2e/
   직후 바로 확인하도록 다시 짜서, `AUTH-031`과 같은 기준(`401` 또는 `429` 둘 다 안전한 거절로 인정)을
   적용했다.
 
-**실 배포용 정적 테스트 계정도 지원한다** — `browser/lib/env.ts`의 `StaticAccounts`/`DeployEnv.staticAccounts`와
-`api/lib/env.js`의 미러 구현이 `DORO_<ACCOUNT_PREFIX>_TENANT_CODE`/`_LOGIN_ID`/`_PASSWORD` 세 값을 모두
-받으면 해당 계정을 활성화한다(예: `DORO_AUTH_LOCKOUT_01_TENANT_CODE`/`_LOGIN_ID`/`_PASSWORD`). 지원
-prefix는 `AUTH_LOCKOUT_01`, `AUTH_INACTIVE_EMPLOYEE_01`, `AUTH_INACTIVE_TENANT_01`,
-`AUTH_ROLE_OWNER_01`, `AUTH_ROLE_MANAGER_01`, `AUTH_ROLE_STAFF_01`이다. `AUTH-013`/`014`/`015`,
-`AUTH-030`/`031`, `FE-BE-014`는 필요한 정적 계정이 있으면 이를 Provisioning보다 우선하고, 없으면 기존
-Provisioning 기반 Fixture 생성으로 폴백한다(`FE-BE-014`는 OWNER/MANAGER/STAFF 세 계정이 모두 있어야
-정적 경로 사용). 실 배포에서는 실제 테넌트 DB에 Provisioning API를 호출하지 않고 검증 계정을 미리
-수동 생성해 두는 운영 방식을 위한 지원이다.
+**실 배포용 정적 테스트 계정만 쓴다 — Provisioning API로 실 테넌트 DB에 계정을 만드는 경로는 전부
+삭제했다.** `browser/lib/env.ts`의 `StaticAccounts`/`DeployEnv.staticAccounts`와 `api/lib/env.js`의
+미러 구현이 `DORO_<ACCOUNT_PREFIX>_TENANT_CODE`/`_LOGIN_ID`/`_PASSWORD` 세 값을 모두 받으면 해당
+계정을 활성화한다(예: `DORO_AUTH_LOCKOUT_01_TENANT_CODE`/`_LOGIN_ID`/`_PASSWORD`). 지원 prefix는
+`AUTH_LOCKOUT_01`, `AUTH_INACTIVE_EMPLOYEE_01`, `AUTH_INACTIVE_TENANT_01`, `AUTH_ROLE_OWNER_01`,
+`AUTH_ROLE_MANAGER_01`, `AUTH_ROLE_STAFF_01`, `AUTH_TEMP_PASSWORD_01`(3값), `AUTH_PASSWORD_ROTATE_01`
+(예외적으로 4값 — `_PASSWORD_A`/`_PASSWORD_B`, `SESS-005`가 매번 현재 비밀번호를 스스로 판별해
+반대쪽으로 바꾼다). `AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-014`, `FE-BE-010`, `SESS-004`,
+`SESS-005` 전부 해당 정적 계정이 없으면 **폴백 없이 곧바로** `SKIP_PRECONDITION`이다(`FE-BE-014`는
+OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 호출하면 실 테넌트 DB에 추적
+안 되는 데이터가 생긴다는 이유로, 이 8개 케이스는 **로컬 리허설에서도** 더 이상 검증할 수 없다 —
+이 리포는 처음부터 실 AWS 배포 검증이 목적이고 로컬 리허설은 스크립트 자체 버그를 미리 잡기 위한
+부수적인 수단이라, 그 부수적인 용도를 위해 Provisioning 경로를 남겨두지 않기로 했다. 자세한 계정
+요구사항은 `Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"` 참고.
 
 잠금 단계 증가(`AUTH-032`)는 실제 clock 대기 비용이 커서(십수 분) 없다. 조건부 화면 반응
 (`FE-BE-010`~`015`, 배포 Frontend–Backend 종단 검증.md §4 "조건부 Browser 시나리오")은
-`browser/tests/fe-be-conditional.spec.ts`에 6개 전부 구현·검증 완료했다(아래 참고).
+`browser/tests/fe-be-conditional.spec.ts`에 6개 전부 구현했다. `FE-BE-011`/`012`/`013`/`015`는
+로컬 리허설로 검증 완료했지만, `FE-BE-010`/`014`는 Provisioning 폴백을 제거하면서 전용 정적 계정
+(`AUTH_TEMP_PASSWORD_01`, `AUTH_ROLE_OWNER_01`/`MANAGER_01`/`STAFF_01`) 전제로 코드가 바뀌어서
+아직 실행 검증 전이다.
 
 `scripts/resolve-deployment-identity.mjs`도 추가했다 — `deployment`(Revision) 4개 필드를
 실제 AWS·GitOps에서 읽어와 `.env.deployment-identity.local`에 채운다. 자세한 내용은 바로 아래
@@ -104,6 +113,7 @@ Provisioning 기반 Fixture 생성으로 폴백한다(`FE-BE-014`는 OWNER/MANAG
 - **EKS 접근 미검증 경고**: `FE-BE-012`(`browser/tests/fe-be-conditional.spec.ts`)의 실 배포 경로, `scripts/run-fault-injection.mjs`의 `OPS-001`/`OPS-003`(로컬 전용, 실 배포 미대응), `scripts/verify-provider-malformed-response.mjs`(`OPS-002`), `scripts/verify-partial-pod-failure.mjs`(`OPS-005`)는 전부 실 EKS 클러스터 접근이 필요한데, 이 리포를 작업한 환경에는 그 접근 권한이 없어서 실제로 실행해 검증하지 못했다. 최초 실행 전 결과를 직접 확인해야 한다.
 - **`OPS-005`는 파괴적이다**: 실제로 `store-access-api` Pod 1개를 `kubectl delete pod`로 지운다 — 승인된 점검 시간에만, `--confirm` 필요.
 - **`OPS-002`는 영향 범위가 넓다**: 실 `store-access-api` Service의 `spec.selector`를 디코이 Pod로 임시 교체한다(재시작이 필요 없고 즉시 반영·즉시 원복되는 방식을 택했다). 다만 `STORE_ACCESS_INTERNAL_BASE_URL` 하나를 edge-api의 로그인·Session Context·Kiosk·Management·비밀번호 변경 Forwarder 6개가 전부 공유하기 때문에, 교체돼 있는 동안에는 store-access-api를 쓰는 edge-api의 모든 통신이 함께 영향을 받는다(`OPS-005`보다 넓은 범위) — 승인된 점검 시간에만, `--confirm` 필요.
+- **정적 계정 8개 준비 필요, 없으면 SKIP만 하고 대체 경로 없음**: `AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-010`/`014`, `SESS-004`/`005`는 전용 정적 계정이 없으면 `SKIP_PRECONDITION`으로만 끝난다 — Provisioning API 폴백을 완전히 제거했기 때문에(실 테넌트 DB에 추적 안 되는 데이터가 생기는 걸 막기 위함) 로컬 리허설로도 우회할 수 없다. 계정 요구사항은 `Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"` 참고.
 
 ## 오케스트레이션 스크립트 사용법
 
@@ -142,7 +152,11 @@ node scripts/run-mandatory-gate.mjs
 
 - `AUTH-032`(잠금 단계 1→2→4→8→15분 증가) — 기술적으로는 구현 가능하지만 실제 시계로 15분 이상 대기해야 해서 자동화 스위트에 넣지 않았다.
 
-**참고**: `FE-BE-012`/`OPS-001`/`OPS-002`/`OPS-005`는 위 A/B/C와 다르다 — "미구현"이 아니라 코드는 이미 완성돼 있고, 이 리포를 작업한 환경에 실 EKS 접근 권한이 없어서 **실행 검증**만 아직 못 한 상태다. 자세한 내용은 위 "주의사항"의 EKS 접근 미검증 경고 참고.
+**참고**: `FE-BE-012`/`OPS-001`/`OPS-002`/`OPS-005`, 그리고 `AUTH-013`/`014`/`015`, `AUTH-030`/`031`,
+`FE-BE-010`/`014`, `SESS-004`/`005`는 위 A/B/C와 다르다 — "미구현"이 아니라 코드는 이미 완성돼 있고,
+전자 4개는 EKS 접근 권한이 없어서(위 "주의사항"의 EKS 접근 미검증 경고 참고), 후자 8개는 요청해둔
+정적 계정이 아직 실제로 만들어지지 않아서(`Docs/Specifications/운영·배포/
+"배포 검증용 테스트 계정 요청.md"` 참고) **실행 검증**만 못 한 상태다.
 
 ### OPS-002 구현 메모
 
@@ -187,6 +201,7 @@ JMESPath `contains()`가 타입 오류를 냈다 — `Aliases.Items || \`[]\``�
 - 배포 전용 실행에서는 Mock, `page.route().fulfill()`, 인증 Session 사전 주입을 금지한다(배포 Frontend–Backend 종단 검증.md §2.1).
 - 결과 로그는 `reports/<runId>/results.jsonl`(browser) 및 `reports/<runId>.<suite>.results.jsonl`(api, k6는 하위 디렉터리를 자동 생성 못 해서 평평한 파일명을 씀)을 정본으로 하며, Password·Cookie·Session·Token 원문은 절대 기록하지 않는다(배포 Frontend–Backend 종단 검증.md §2, §8).
 - **`AUTH_VALID_01` Rate Limit Bucket 주의**: `browser`와 `api` 스위트를 60초 이내에 이어서 돌리면 계정 Bucket(기본 용량 5)을 넘겨 뒤쪽 케이스가 잘못된 `429`로 실패할 수 있다. 자세한 내용과 대응은 [api/README.md](api/README.md#️-계정-rate-limit-bucket-주의) 참고.
+- **Provisioning API는 어디서도 호출하지 않는다.** 실 테넌트 DB에 추적 안 되는 데이터가 생기는 걸 막기 위해 `AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-010`/`014`, `SESS-004`/`005`의 Provisioning 폴백을 전부 삭제했다 — 정적 계정이 없으면 SKIP만 한다. (로컬 Docker Postgres에 계정을 만드는 `scripts/provision-local-rehearsal-account.mjs`는 별개다 — 실 테넌트 DB가 아니라 매번 새로 띄우는 격리된 로컬 컨테이너를 대상으로 하므로 이 금지와 무관하다.)
 
 ## 실행
 
@@ -212,10 +227,13 @@ DORO_AUTH_VALID_01_PASSWORD=... k6 run --log-format=raw api/scenarios/auth-manda
 node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
-# 4) k6 세션 흐름 — SESS-004/005까지 돌리려면 Provisioning 자격증명도 필요(없으면 그 둘만 Skip)
+# 4) k6 세션 흐름 — SESS-004/005까지 돌리려면 AUTH_TEMP_PASSWORD_01/AUTH_PASSWORD_ROTATE_01
+# 정적 계정도 필요(없으면 그 둘만 SKIP, Provisioning 폴백 없음)
 DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... \
-DORO_AUTH_VALID_01_PASSWORD=... PROVISIONING_ORIGIN=... \
-STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
+DORO_AUTH_VALID_01_PASSWORD=... \
+DORO_AUTH_TEMP_PASSWORD_01_TENANT_CODE=... DORO_AUTH_TEMP_PASSWORD_01_LOGIN_ID=... DORO_AUTH_TEMP_PASSWORD_01_PASSWORD=... \
+DORO_AUTH_PASSWORD_ROTATE_01_TENANT_CODE=... DORO_AUTH_PASSWORD_ROTATE_01_LOGIN_ID=... \
+DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_A=... DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_B=... \
   k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/k6-session-flow.log 2>&1
 node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
@@ -244,6 +262,13 @@ Docker Compose로 6개 Spring Boot 서비스를 `prod` Profile + 자체 서명 T
 `scripts/resolve-deployment-identity.mjs`를 먼저 돌려 Revision 정보를 채운 뒤 실행한다. **로컬 리허설은 스크립트
 자체 버그(셀렉터 깨짐·JSON 스키마 오타 등)를 미리 잡기 위한 것일 뿐, 배포 Frontend–Backend 종단 검증.md
 §9의 "완료 조건"을 대체하지 않는다** — 아래 "이 모드가 증명하지 못하는 것"을 반드시 읽을 것.
+
+**정적 계정 8개가 필요한 케이스(`AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-010`/`014`, `SESS-004`/`005`)는
+로컬 리허설로 검증할 수 없다.** 이 리포는 애초에 실 AWS 배포 검증이 본래 목적이고 로컬 리허설은 스크립트
+버그를 미리 잡기 위한 부수적인 수단인데, 그 부수적인 용도를 위해 Provisioning API로 실 테넌트 DB에
+계정을 만드는 경로를 남겨두지 않기로 했다(위 "실행 전제" 참고) — 정적 계정은 실 배포 대상 전용이라
+로컬 Postgres엔 존재하지 않는다. 아래 명령들 중 이 8개 케이스에 해당하는 부분은 전부 `SKIP_PRECONDITION`으로만
+끝난다.
 
 ### 사전 준비: `Doro-ERP-Service`의 기존 Prod-like Docker 스택
 
@@ -344,10 +369,8 @@ DORO_API_ORIGIN=https://localhost:8080 \
 node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
-# k6 SESS-004/005는 이 계정과 무관한 1회용 Fixture를 직접 만들어서 쓰므로 Provisioning
-# 자격증명도 넘긴다 — PROVISIONING_ORIGIN은 store-access-api에 직접(Edge 아님).
-PROVISIONING_ORIGIN=https://localhost:8081 \
-STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
+# SESS-004/005는 정적 계정(AUTH_TEMP_PASSWORD_01/AUTH_PASSWORD_ROTATE_01) 전용이라 로컬
+# Postgres엔 그 계정이 없다 — 아래처럼 그냥 돌리면 두 케이스는 SKIP_PRECONDITION으로만 끝난다.
 DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/session-flow.js \
   > /tmp/k6-session-flow.log 2>&1
@@ -359,7 +382,10 @@ node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
 
 2026-08-24에 이 순서 그대로 로컬 Docker Prod-like 스택에 붙여 `FE-BE-001`~`006` 6/6, `AUTH-*` 10/10,
 `SESS-001/002/004/005` 4/4, 그리고 셋을 묶은 `combined-summary.json`의 `frontBackConnected: true`까지
-전부 확인했다. 이 과정에서 실제 버그 3개를 로컬 리허설로 잡았다:
+전부 확인했다(**단, 이건 Provisioning 폴백을 삭제하기 전 기록이다** — 이후 `AUTH-013`/`014`/`015`,
+`SESS-004`/`005`가 전용 정적 계정 없이는 `SKIP_PRECONDITION`으로만 끝나도록 바뀌어서, 지금 같은
+순서로 다시 돌리면 이 숫자가 그대로 재현되지 않는다. 위 "정적 계정 8개가 필요한 케이스" 참고). 이
+과정에서 실제 버그 3개를 로컬 리허설로 잡았다:
 - `FE-BE-006`의 `page.waitForURL('**/pos/login')`이 로그아웃 후 `goBack()`으로 돌아갈 때 실제 URL이
   `/pos/login?redirect=/pos/orders`(Router Guard가 Query String을 붙임)라 매칭에 실패해 Timeout까지
   걸렸다 — `**/pos/login**`로 수정.
@@ -369,12 +395,12 @@ node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
 ### 잠금·Rate Limit·장애 주입 (선택, 기본 비활성)
 
 ```bash
-# AUTH-030/031/033/034 — 5회 실패 계정 잠금과 계정·IP Rate Limit Bucket 소진
+# AUTH-030/031/033/034 — 5회 실패 계정 잠금과 계정·IP Rate Limit Bucket 소진.
+# AUTH-030/031은 AUTH_LOCKOUT_01 정적 계정이 로컬엔 없어서 SKIP_PRECONDITION으로 끝난다 —
+# 033/034는 계정이 필요 없는 케이스라 그대로 돈다.
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
 DORO_API_ORIGIN=https://localhost:8080 \
 DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
-PROVISIONING_ORIGIN=https://localhost:8081 \
-STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-lockout-ratelimit.js \
   > /tmp/k6-lockout.log 2>&1
 node api/lib/build-report.mjs /tmp/k6-lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033,AUTH-034
@@ -387,7 +413,8 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm
 `AUTH_VALID_01` 값은 이 스크립트가 실제로 쓰지는 않지만 `loadDeployEnv()`가 공통으로 요구해서 더미 값을
 넣어야 한다. 2026-08-24에 로컬 Docker Prod-like 스택에서 `AUTH-030/031/033/034` 4/4,
 `OPS-001`/`OPS-003` 둘 다 PASS(장애 주입 → `503 LOGIN_UNAVAILABLE` → 컨테이너 재기동 → 정상 `401` 복구)까지
-확인했다. 가장 중요한 발견은 `AUTH-031`이다 — 계정 Rate Limit Bucket 용량(5)이 잠금 임계치(5회 실패)와
+확인했다(**이것도 Provisioning 폴백을 삭제하기 전 기록이다** — 지금은 `AUTH-030`/`031`이
+`AUTH_LOCKOUT_01` 정적 계정 없이는 `SKIP_PRECONDITION`으로만 끝난다). 가장 중요한 발견은 `AUTH-031`이다 — 계정 Rate Limit Bucket 용량(5)이 잠금 임계치(5회 실패)와
 정확히 같아서, 5번째 실패 직후 요청은 **문서가 적은 `401`이 아니라 `429 AUTH_RATE_LIMITED`**로 막힌다
 (정확한 비밀번호를 넣어도 마찬가지). Bucket이 먼저 소진되기 때문이며, 로컬 기본값(용량 5/분당 1)이
 실제 운영 기본값과 같으므로 운영에서도 같은 현상이 예상된다. **실 배포 대상으로 돌릴 계획이라면

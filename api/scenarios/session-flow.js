@@ -2,7 +2,6 @@ import { check, group } from 'k6'
 import { loadDeployEnv } from '../lib/env.js'
 import { freshJar, postJson, patchJson, getJson, header, parseProblem, xsrfTokenFrom } from '../lib/http.js'
 import { record } from '../lib/resultLogger.js'
-import { provisioningAvailable, provisionThrowawayOwner, randomToken, randomPassword } from '../lib/provisioning.js'
 
 export const options = {
   vus: 1,
@@ -14,7 +13,8 @@ export const options = {
 
 // 실행 뒤 `node api/lib/build-report.mjs <log> session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007`로
 // summary.json을 만든다 — 이 스크립트가 다루는 필수 케이스 ID (README 참고). SESS-004/005는
-// Provisioning 자격증명이 있을 때만 추가되므로 그때는 뒤에 이어 붙인다(README 참고).
+// 전용 정적 계정(AUTH_TEMP_PASSWORD_01/AUTH_PASSWORD_ROTATE_01)이 있을 때만 추가되므로 그때는
+// 뒤에 이어 붙인다(README 참고) — 실 배포 대상 테넌트 DB에 Provisioning API로 계정을 만들지 않는다.
 //
 // SESS-006/007: /api/v1/auth/reauthenticate(ADR-02-003/011, "중요 관리 작업 전 15분 재인증 창"
 // 갱신). 원래 SESS-* 카탈로그엔 없던 항목 — Doro-ERP-Service의 최근 tests/system 커밋을 검토하다
@@ -237,112 +237,124 @@ export default function () {
     })
   })
 
-  group('SESS-004 / SESS-005: 임시 비밀번호 로그인과 비밀번호 변경 후 기존 Session 거절', () => {
+  // SESS-004/005는 각자 다른 정적 계정을 쓰는 독립된 시나리오다 — 실 배포 대상 테넌트 DB에
+  // Provisioning API로 계정을 만들지 않는다(Docs/Specifications/운영·배포/
+  // "배포 검증용 테스트 계정 요청.md" 참고).
+
+  group('SESS-004: 임시 비밀번호 로그인', () => {
     const startedAt = new Date().toISOString()
-
-    if (!provisioningAvailable(env)) {
-      for (const id of ['SESS-004', 'SESS-005']) {
-        record(env, {
-          testCaseId: id,
-          startedAt,
-          durationMs: 0,
-          resultCode: 'SKIP_PRECONDITION',
-          errorClass: 'PROVISIONING_ORIGIN/STORE_ACCESS_PROVISIONING_USERNAME/PASSWORD 미설정 — 1회용 Fixture 생성 불가',
-        })
-      }
+    const t0 = Date.now()
+    const tempAccount = env.staticAccounts.tempPassword
+    if (!tempAccount) {
+      record(env, {
+        testCaseId: 'SESS-004',
+        startedAt,
+        durationMs: 0,
+        resultCode: 'SKIP_PRECONDITION',
+        errorClass: 'AUTH_TEMP_PASSWORD_01 정적 계정 없음 — 임시 비밀번호 Fixture 준비 불가',
+      })
       return
     }
 
-    // AUTH_VALID_01(Rate Limit Bucket)이 아니라 이 케이스 전용 1회용 테넌트+OWNER를 새로 만든다.
-    const fixture = {
-      tenantCode: `e2e-sess-${randomToken().slice(0, 12)}`,
-      tenantName: 'Doro E2E SESS Fixture',
-      storeName: 'Doro E2E SESS Fixture Store',
-      loginId: 'owner',
-      temporaryPassword: randomPassword('Sess004Temp'),
-    }
-    const permanentPassword = randomPassword('Sess005Perm')
-
-    try {
-      provisionThrowawayOwner(env, fixture)
-    } catch (error) {
-      for (const id of ['SESS-004', 'SESS-005']) {
-        record(env, {
-          testCaseId: id,
-          startedAt,
-          durationMs: 0,
-          resultCode: 'ERROR_TRANSPORT',
-          errorClass: error instanceof Error ? error.message : String(error),
-        })
-      }
-      return
-    }
-
-    const t004 = Date.now()
-    const jar = freshJar()
     const loginRes = postJson(
       loginUrl,
-      { tenantCode: fixture.tenantCode, loginId: fixture.loginId, password: fixture.temporaryPassword },
-      { jar },
+      { tenantCode: tempAccount.tenantCode, loginId: tempAccount.loginId, password: tempAccount.password },
+      { jar: freshJar() },
     )
     const loginBody = parseProblem(loginRes)
-    const pass004 = loginRes.status === 200 && loginBody.passwordChangeRequired === true
-    check(null, { 'SESS-004 임시 비밀번호 로그인': () => pass004 })
+    const pass = loginRes.status === 200 && loginBody.passwordChangeRequired === true
+    check(null, { 'SESS-004 임시 비밀번호 로그인': () => pass })
     record(env, {
       testCaseId: 'SESS-004',
       startedAt,
-      durationMs: Date.now() - t004,
-      resultCode: pass004 ? 'PASS' : 'FAIL_ASSERTION',
+      durationMs: Date.now() - t0,
+      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
       expected: { requestPath: '/api/v1/auth/login', httpStatus: 200 },
       observed: { httpStatus: loginRes.status },
       requestId: header(loginRes, 'X-Request-Id'),
       assertions: { status200: loginRes.status === 200, passwordChangeRequired: loginBody.passwordChangeRequired === true },
-      errorClass: pass004 ? null : 'ASSERTION_MISMATCH',
+      errorClass: pass ? null : 'ASSERTION_MISMATCH',
     })
+  })
 
-    if (!pass004) {
+  group('SESS-005: 비밀번호 변경 후 기존 Session 거절', () => {
+    const startedAt = new Date().toISOString()
+    const t0 = Date.now()
+    const rotateAccount = env.staticAccounts.passwordRotate
+    if (!rotateAccount) {
       record(env, {
         testCaseId: 'SESS-005',
         startedAt,
         durationMs: 0,
         resultCode: 'SKIP_PRECONDITION',
-        errorClass: 'SESS-004 실패로 전제조건(임시 비밀번호 Session) 불충족',
+        errorClass: 'AUTH_PASSWORD_ROTATE_01 정적 계정 없음 — 비밀번호 변경 Fixture 준비 불가',
+      })
+      return
+    }
+
+    // 이 계정은 매 실행마다 실제로 비밀번호를 바꾸므로 "지금 현재 비밀번호가 A인지 B인지"를
+    // 스스로 판별해야 한다 — A로 먼저 로그인 시도, 실패하면 B로 시도한다
+    // (scripts/provision-local-rehearsal-account.mjs가 쓰는 "먼저 시도해서 현재 상태를 알아내는"
+    // 패턴과 동일). 성공한 쪽이 현재 비밀번호이고, 반대쪽으로 바꾼다.
+    const jar = freshJar()
+    let currentPassword = rotateAccount.passwordA
+    let newPassword = rotateAccount.passwordB
+    let loginRes = postJson(
+      loginUrl,
+      { tenantCode: rotateAccount.tenantCode, loginId: rotateAccount.loginId, password: currentPassword },
+      { jar },
+    )
+    if (loginRes.status !== 200) {
+      currentPassword = rotateAccount.passwordB
+      newPassword = rotateAccount.passwordA
+      loginRes = postJson(
+        loginUrl,
+        { tenantCode: rotateAccount.tenantCode, loginId: rotateAccount.loginId, password: currentPassword },
+        { jar },
+      )
+    }
+    if (loginRes.status !== 200) {
+      record(env, {
+        testCaseId: 'SESS-005',
+        startedAt,
+        durationMs: Date.now() - t0,
+        resultCode: 'ERROR_TRANSPORT',
+        errorClass: `A/B 비밀번호 둘 다 로그인 실패 (status=${loginRes.status}) — AUTH_PASSWORD_ROTATE_01 계정 상태를 직접 확인 필요`,
       })
       return
     }
 
     const changeRes = patchJson(
       `${env.apiOrigin}/api/v1/employees/me/password`,
-      { currentPassword: fixture.temporaryPassword, newPassword: permanentPassword },
+      { currentPassword, newPassword },
       { jar, headers: { 'X-XSRF-TOKEN': xsrfTokenFrom(jar, protectedUrl) } },
     )
     if (changeRes.status !== 200) {
       record(env, {
         testCaseId: 'SESS-005',
         startedAt,
-        durationMs: 0,
+        durationMs: Date.now() - t0,
         resultCode: 'ERROR_TRANSPORT',
         errorClass: `비밀번호 변경 실패: HTTP ${changeRes.status}`,
       })
       return
     }
 
-    const t005 = Date.now()
     // 방금 비밀번호를 바꾼 계정의 "옛 Session"(jar)을 그대로 재사용 — Store Access가 비밀번호
     // 변경 시 기존 Session을 전부 무효화해야 하므로 401이 나와야 정상이다.
     const oldSessionRes = getJson(protectedUrl, { jar })
-    const pass005 = oldSessionRes.status === 401
-    check(null, { 'SESS-005 비밀번호 변경 후 기존 Session 거절': () => pass005 })
+    const pass = oldSessionRes.status === 401
+    check(null, { 'SESS-005 비밀번호 변경 후 기존 Session 거절': () => pass })
     record(env, {
       testCaseId: 'SESS-005',
       startedAt,
-      durationMs: Date.now() - t005,
-      resultCode: pass005 ? 'PASS' : 'FAIL_ASSERTION',
+      durationMs: Date.now() - t0,
+      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
       expected: { requestPath: PROTECTED_PATH, httpStatus: 401 },
       observed: { protectedApiPath: PROTECTED_PATH, protectedApiStatus: oldSessionRes.status },
       requestId: header(oldSessionRes, 'X-Request-Id'),
-      assertions: { oldSessionRejected: pass005 },
-      errorClass: pass005 ? null : 'ASSERTION_MISMATCH',
+      assertions: { oldSessionRejected: pass },
+      errorClass: pass ? null : 'ASSERTION_MISMATCH',
     })
   })
 }

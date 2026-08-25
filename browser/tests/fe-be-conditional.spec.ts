@@ -2,13 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { test, expect, type ConsoleMessage, type Page, type Request } from '@playwright/test'
 import { loadDeployEnv } from '../lib/env'
 import { appendCaseResult, type CaseResultInput } from '../lib/resultLogger'
-import {
-  provisioningAvailable,
-  provisionThrowawayOwner,
-  randomToken,
-  randomPassword,
-  allowLocalSelfSignedCert,
-} from '../lib/provisioning'
+import { randomToken, allowLocalSelfSignedCert } from '../lib/provisioning'
 import { setupRoleFixtures, type RoleAccount } from '../lib/roleFixtures'
 
 // FE-BE-010~015 (배포 Frontend–Backend 종단 검증.md §4 "조건부 Browser 시나리오"). FE-BE-001~006과 달리 전부
@@ -378,33 +372,24 @@ test('FE-BE-010 임시 비밀번호 계정 로그인 시 비밀번호 변경 화
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
 
-  if (!provisioningAvailable(env)) {
+  const account = env.staticAccounts.tempPassword
+  if (!account) {
     record({
       testCaseId: 'FE-BE-010',
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: 'Provisioning 자격증명 없음 — 임시 비밀번호 Fixture 생성 불가',
+      errorClass: 'AUTH_TEMP_PASSWORD_01 정적 계정 없음 — 임시 비밀번호 Fixture 준비 불가',
     })
     return
-  }
-
-  const fixture = {
-    tenantCode: `e2e-temp-pw-${randomToken().slice(0, 10)}`,
-    tenantName: 'Doro E2E FE-BE-010 Fixture',
-    storeName: 'Doro E2E FE-BE-010 Store',
-    loginId: 'owner',
-    temporaryPassword: randomPassword('Fixture010'),
   }
 
   let pass = false
   let status = 0
   let finalPath = ''
   try {
-    await provisionThrowawayOwner(env, fixture)
-
     await page.goto('/pos/login')
-    await fillLoginForm(page, fixture.tenantCode, fixture.loginId, fixture.temporaryPassword)
+    await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
     const res = await submitAndWaitLogin(page)
     status = res.status()
 
@@ -448,13 +433,13 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
 
   const { roleOwner, roleManager, roleStaff } = env.staticAccounts
   const hasStaticRoleAccounts = roleOwner !== null && roleManager !== null && roleStaff !== null
-  if (!provisioningAvailable(env) && !hasStaticRoleAccounts) {
+  if (!hasStaticRoleAccounts) {
     record({
       testCaseId: 'FE-BE-014',
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: 'Provisioning 자격증명도 AUTH_ROLE_OWNER_01/MANAGER_01/STAFF_01 정적 계정도 없음 — OWNER/MANAGER/STAFF Fixture 준비 불가',
+      errorClass: 'AUTH_ROLE_OWNER_01/MANAGER_01/STAFF_01 정적 계정 없음 — OWNER/MANAGER/STAFF Fixture 준비 불가',
     })
     return
   }
