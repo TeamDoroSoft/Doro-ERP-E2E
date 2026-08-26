@@ -138,7 +138,8 @@ spec:
       image: node:20-alpine
       command: ["node", "-e", "${DECOY_SCRIPT.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]
       ports:
-        - containerPort: 8081
+        - name: http
+          containerPort: 8081
 `
   kubectl(['apply', '-f', '-'], { input: manifest })
 }
@@ -146,9 +147,13 @@ spec:
 function deleteDecoyPod() {
   try {
     kubectl(['delete', 'pod', DECOY_POD_NAME, '-n', K8S_NAMESPACE, '--ignore-not-found', '--wait=false'])
-  } catch {
+  } catch (error) {
     // 정리 실패는 무시하고 계속 진행 — main()의 finally에서 이미 Service는 복원했으므로
-    // 디코이 Pod가 잠깐 남아 있어도 실제 트래픽에는 영향이 없다.
+    // 디코이 Pod가 잠깐 남아 있어도 실제 트래픽에는 영향이 없다. 다만 사람이 알아챌 수 있게 남긴다.
+    console.error(
+      `⚠ 디코이 Pod(${DECOY_POD_NAME}, namespace=${K8S_NAMESPACE}) 삭제 실패 — 수동으로 확인·정리 필요: ` +
+        (error instanceof Error ? error.message : String(error)),
+    )
   }
 }
 

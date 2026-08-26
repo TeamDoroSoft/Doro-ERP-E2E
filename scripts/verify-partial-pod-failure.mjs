@@ -216,29 +216,52 @@ async function main() {
   console.log(`${targetName} Pod를 delete합니다...`)
   kubectl(['delete', 'pod', targetName, '-n', K8S_NAMESPACE, '--wait=false'])
 
-  console.log('Endpoint 목록에서 대상 Pod IP가 빠질 때까지 대기(최대 30초)...')
-  const excluded = await waitUntil(() => !getReadyEndpointIps().has(targetIp), 30_000, 1000)
-
-  console.log('제외돼 있는 동안 로그인 요청이 계속 401(정상 처리)인지 15초간 확인 (나머지 1개 Pod로만 라우팅돼야 함)...')
+  // Pod delete 이후의 확인 단계들(Endpoint 제외 대기 → 장애 중 로그인 프로브 → Session 왕복
+  // 확인)은 실제 클러스터를 상대로 한 kubectl/네트워크 호출이 이어지는 구간이라 일시적으로
+  // 실패할 수 있다. 이 중 하나라도 예외를 던지면 아래에서 잡아서 기록만 해두고, "대체 Pod가
+  // 복구됐는지" 확인은 무조건 진행한다 — 여기서 그냥 죽어버리면 delete만 해놓고 클러스터가
+  // 실제로 복구됐는지 아무도 확인하지 않은 채 스크립트가 끝나버리기 때문이다.
+  let excluded = false
   const duringFaultStatuses = []
-  const probeDeadline = Date.now() + 15_000
-  while (Date.now() < probeDeadline) {
-    duringFaultStatuses.push((await loginProbe()).status)
-    await new Promise((r) => setTimeout(r, 1000))
-  }
-  const remainingTargetServedNormally = duringFaultStatuses.length > 0 && duringFaultStatuses.every((s) => s === 401)
+  let remainingTargetServedNormally = false
+  let sessionResult = { ok: false, step: 'not-run' }
+  let postDeleteError = null
 
-  console.log('Session 계약 확인: 실 계정으로 로그인 → 보호 API 왕복...')
-  const sessionResult = await checkSessionRoundTrip()
+  try {
+    console.log('Endpoint 목록에서 대상 Pod IP가 빠질 때까지 대기(최대 30초)...')
+    excluded = await waitUntil(() => !getReadyEndpointIps().has(targetIp), 30_000, 1000)
+
+    console.log('제외돼 있는 동안 로그인 요청이 계속 401(정상 처리)인지 15초간 확인 (나머지 1개 Pod로만 라우팅돼야 함)...')
+    const probeDeadline = Date.now() + 15_000
+    while (Date.now() < probeDeadline) {
+      duringFaultStatuses.push((await loginProbe()).status)
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    remainingTargetServedNormally = duringFaultStatuses.length > 0 && duringFaultStatuses.every((s) => s === 401)
+
+    console.log('Session 계약 확인: 실 계정으로 로그인 → 보호 API 왕복...')
+    sessionResult = await checkSessionRoundTrip()
+  } catch (error) {
+    postDeleteError = error instanceof Error ? error.message : String(error)
+    console.error(
+      `Pod delete 이후 확인 단계에서 오류가 발생했습니다 — 그래도 복구 대기는 반드시 진행합니다: ${postDeleteError}`,
+    )
+  }
 
   console.log(`대체 Pod가 기동해 Ready Pod 수가 ${originalReadyCount}으로 복구될 때까지 대기(최대 3분)...`)
   const recovered = await waitUntil(() => getReadyPods().length >= originalReadyCount, 180_000, 3000)
 
-  const pass = excluded && remainingTargetServedNormally && sessionResult.ok && recovered
+  const pass = postDeleteError === null && excluded && remainingTargetServedNormally && sessionResult.ok && recovered
   console.log(
     `excluded=${excluded} remainingTargetServedNormally=${remainingTargetServedNormally} ` +
       `sessionOk=${sessionResult.ok}(step=${sessionResult.step}, status=${sessionResult.status ?? '(none)'}) recovered=${recovered}`,
   )
+  if (postDeleteError !== null) {
+    console.error(
+      `Pod delete 이후 확인 단계 오류로 조기 종료됨: ${postDeleteError} — ` +
+        `클러스터 복구 결과: ${recovered ? `Ready Pod 수가 ${originalReadyCount}으로 복구됨` : '복구되지 않음(수동 확인 필요)'}`,
+    )
+  }
   console.log(pass ? 'OPS-005 PASS' : 'OPS-005 FAIL')
 
   writeResult({
@@ -251,6 +274,7 @@ async function main() {
     recovered,
     originalReadyCount,
     pass,
+    postDeleteError,
   })
   process.exit(pass ? 0 : 1)
 }
@@ -265,6 +289,7 @@ function writeResult({
   recovered,
   originalReadyCount,
   pass,
+  postDeleteError,
 }) {
   const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'reports')
   const runId = process.env.DORO_RUN_ID || `run-ops-${Date.now()}`
@@ -309,7 +334,7 @@ function writeResult({
       recoveredToOriginalReadyCount: recovered,
     },
     artifacts: { failureScreenshot: null },
-    errorClass: pass ? null : 'ASSERTION_MISMATCH',
+    errorClass: pass ? null : postDeleteError ? `POST_DELETE_ERROR: ${postDeleteError}` : 'ASSERTION_MISMATCH',
   }
   mkdirSync(reportsDir, { recursive: true })
   const outPath = resolve(reportsDir, `${runId}.ops-005.results.jsonl`)

@@ -230,10 +230,22 @@ async function waitForStoreAccessHealthy(timeoutMs = 60_000): Promise<void> {
 // -- 실 배포(EKS) 경로 --------------------------------------------------------
 // Doro-ERP-GitOps deploy/base/store-access-api/{deployment,availability,service}.yaml 기준:
 // Deployment/HPA/Service가 모두 이름 "store-access-api"이고, overlays/prod/alpha에서
-// namespace가 "doro-alpha"로 고정된다. HPA는 minReplicas:2/maxReplicas:4로 CPU 기준
-// Autoscale하므로, 이 값을 그대로 두고 Deployment만 --replicas=0으로 내리면 HPA
-// Controller가 곧바로(기본 Sync 주기 15초 안) minReplicas 미달을 감지해 다시 올려버린다 —
-// 그래서 HPA의 minReplicas를 0으로 먼저 낮춰 "일시 정지"시킨 다음에 Deployment를 내린다.
+// namespace가 "doro-alpha"로 고정된다. HPA는 minReplicas:2/maxReplicas:4로 CPU(Resource)
+// Metric 하나만 보고 Autoscale하므로, 이 값을 그대로 두고 Deployment만 --replicas=0으로
+// 내리면 HPA Controller가 곧바로(기본 Sync 주기 15초 안) minReplicas 미달을 감지해 다시
+// 올려버린다.
+//
+// (과거 시도: HPA의 minReplicas를 0으로 먼저 낮춰 "일시 정지"시킨 뒤 Deployment를 내리는
+// 방식을 썼었다. 하지만 autoscaling/v2 HPA API는 Object/External 타입 Metric이 최소
+// 하나 있어야만 minReplicas:0을 허용하도록 API Server가 검증한다 — 이 HPA는
+// Resource(CPU) Metric 하나뿐이라 minReplicas:0 Patch 자체가 API Server에서 거부되어
+// 이 경로는 원천적으로 항상 실패했다.)
+//
+// 그래서 minReplicas를 건드리는 대신 HPA를 통째로 삭제해 Autoscale 통제를 잠깐 없앤
+// 다음 Deployment를 --replicas=0으로 내린다. 삭제 전에 HPA의 .spec만 따로 저장해두고
+// (metadata.resourceVersion/uid, status 등 서버 관리 필드는 버린다), 검증이 끝나면
+// Deployment를 원래 Replicas로 되돌린 뒤 저장해둔 .spec으로 `kubectl apply -f -`에
+// Manifest를 흘려보내 HPA를 다시 만든다.
 // PodDisruptionBudget(maxUnavailable:1)은 Eviction API 경로에만 적용되고 Deployment
 // Scale-down 자체는 막지 않으므로 별도로 다룰 필요가 없다.
 //
@@ -245,8 +257,8 @@ const K8S_NAMESPACE = process.env.DORO_K8S_NAMESPACE ?? 'doro-alpha'
 const K8S_DEPLOYMENT = process.env.DORO_K8S_STORE_ACCESS_DEPLOYMENT ?? 'store-access-api'
 const K8S_HPA = process.env.DORO_K8S_STORE_ACCESS_HPA ?? 'store-access-api'
 
-function kubectl(args: string[]): string {
-  return execFileSync('kubectl', args, { encoding: 'utf8' }).trim()
+function kubectl(args: string[], opts: { input?: string } = {}): string {
+  return execFileSync('kubectl', args, { encoding: 'utf8', ...opts }).trim()
 }
 
 function kubectlReachable(): boolean {
@@ -257,6 +269,20 @@ function kubectlReachable(): boolean {
   } catch {
     return false
   }
+}
+
+// HPA 삭제 전에 저장해둔 .spec으로 HPA를 다시 만든다 — metadata/status는 서버가 다시
+// 채워주므로 이름/namespace만 함께 넣어준다. kubectl apply -f - 는 YAML뿐 아니라 JSON도
+// 그대로 받아들인다(scripts/verify-provider-malformed-response.mjs의 applyDecoyPod()와
+// 동일하게 execFileSync에 input으로 Manifest 문자열을 흘려보내는 방식).
+function restoreHpa(spec: unknown): void {
+  const manifest = JSON.stringify({
+    apiVersion: 'autoscaling/v2',
+    kind: 'HorizontalPodAutoscaler',
+    metadata: { name: K8S_HPA, namespace: K8S_NAMESPACE },
+    spec,
+  })
+  kubectl(['apply', '-f', '-'], { input: manifest })
 }
 
 async function waitForReadyReplicas(target: number, timeoutMs = 90_000): Promise<boolean> {
@@ -303,21 +329,54 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
   }
 
   let originalReplicas: string | null = null
-  let originalMinReplicas: string | null = null
+  let hpaSpec: unknown = null
+  let hpaDeleted = false
+
+  // HPA 삭제와 Deployment 원복을 한데 묶은 최선 노력(Best-effort) 복구 — 두 단계 중
+  // 하나가 실패해도 나머지는 계속 시도한다(둘 다 시도하지 않으면 Deployment가 0에
+  // 머물거나 HPA가 없는 채로 남을 수 있다).
+  function restoreNonLocal(): void {
+    if (originalReplicas !== null) {
+      try {
+        kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, `--replicas=${originalReplicas}`])
+      } catch (err) {
+        console.error(
+          `⚠ ${K8S_NAMESPACE}/${K8S_DEPLOYMENT} replicas를 ${originalReplicas}(으)로 복구하지 못했습니다 — 수동 확인 필요: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+      }
+    }
+    if (hpaDeleted && hpaSpec !== null) {
+      try {
+        restoreHpa(hpaSpec)
+      } catch (err) {
+        console.error(
+          `⚠ ${K8S_NAMESPACE}/${K8S_HPA} HPA를 재생성하지 못했습니다 — 수동 확인 필요: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+      }
+    }
+  }
 
   if (IS_LOCAL) {
     execFileSync('docker', ['stop', STORE_ACCESS_CONTAINER])
   } else {
-    originalReplicas = kubectl(['get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '-o', 'jsonpath={.spec.replicas}'])
-    originalMinReplicas = kubectl(['get', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '-o', 'jsonpath={.spec.minReplicas}'])
-    kubectl(['patch', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '--type=merge', '-p', '{"spec":{"minReplicas":0}}'])
-    kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '--replicas=0'])
-    const wentDown = await waitForReadyReplicas(0)
-    if (!wentDown) {
-      // 복구 없이 그냥 멈추면 실 서비스가 계속 죽어 있게 되므로, 진행 전에 즉시 원복부터 시도한다.
-      kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, `--replicas=${originalReplicas}`])
-      kubectl(['patch', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '--type=merge', '-p', `{"spec":{"minReplicas":${originalMinReplicas}}}`])
-      throw new Error(`${K8S_NAMESPACE}/${K8S_DEPLOYMENT}의 readyReplicas가 0으로 내려가지 않았습니다 — 원래 상태로 되돌렸습니다.`)
+    // 이 지점부터 HPA 삭제/Deployment Scale-down이 끝나는 지점까지 어디서 던져도(kubectl
+    // delete/scale 자체가 실패하는 경우 포함) 이미 바뀐 것만큼은 반드시 원복을 시도한다.
+    try {
+      originalReplicas = kubectl(['get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '-o', 'jsonpath={.spec.replicas}'])
+      hpaSpec = JSON.parse(kubectl(['get', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '-o', 'json'])).spec
+      kubectl(['delete', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE])
+      hpaDeleted = true
+      kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '--replicas=0'])
+      const wentDown = await waitForReadyReplicas(0)
+      if (!wentDown) {
+        throw new Error(`${K8S_NAMESPACE}/${K8S_DEPLOYMENT}의 readyReplicas가 0으로 내려가지 않았습니다.`)
+      }
+    } catch (err) {
+      // 복구 없이 그냥 멈추면 실 서비스가 계속 죽어 있게 되므로, 던지기 전에 즉시 원복부터 시도한다.
+      restoreNonLocal()
+      throw err
     }
   }
 
@@ -352,8 +411,7 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
       execFileSync('docker', ['start', STORE_ACCESS_CONTAINER])
       await waitForStoreAccessHealthy()
     } else {
-      kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, `--replicas=${originalReplicas}`])
-      kubectl(['patch', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '--type=merge', '-p', `{"spec":{"minReplicas":${originalMinReplicas}}}`])
+      restoreNonLocal()
       const recovered = await waitForReadyReplicas(Number(originalReplicas))
       if (!recovered) {
         throw new Error(

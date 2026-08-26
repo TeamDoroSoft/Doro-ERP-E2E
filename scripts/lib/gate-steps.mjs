@@ -5,7 +5,7 @@
 // 돈다. 대신 안 켜져 있으면 어떤 케이스가 SKIP되는지, 켜려면 뭘 해야 하는지 guidance만
 // 안내한다(README/api/README.md에 이미 있는 설명을 실행 시점에 다시 보여주는 것뿐).
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -52,10 +52,16 @@ export function guardFlag(envVarName, forWhat, howToEnable) {
 
 export function runPlaywrightSpec(specFile) {
   try {
+    // Windows에서 npx는 .cmd/.ps1 셸 스크립트라 execFileSync가 셸 없이는 실행 파일을 찾지
+    // 못해 ENOENT를 던진다 — shell: true로 셸을 통해 실행한다. specFile은 항상 이 코드베이스
+    // 안에 하드코딩된 문자열 리터럴(예: 'tests/fe-be-mandatory.spec.ts')만 들어오고 외부/사용자
+    // 입력이 아니므로, Node가 띄우는 DEP0190(셸 모드 인자 이스케이프) 경고의 셸 인젝션 우려는
+    // 여기 해당하지 않는다.
     execFileSync('npx', ['playwright', 'test', specFile], {
       cwd: BROWSER_DIR,
       stdio: 'inherit',
       env: process.env,
+      shell: true,
     })
     return { ok: true, status: 0 }
   } catch (error) {
@@ -101,7 +107,7 @@ export function runK6Scenario(scenarioRelPath, suiteName, caseIds) {
       ['api/lib/build-report.mjs', rawLogPath, suiteName, caseIds.join(',')],
       { cwd: REPO_ROOT, stdio: 'inherit', env: process.env },
     )
-    return { ok: true, status: 0, k6Status }
+    return { ok: k6Status === 0, status: 0, k6Status }
   } catch (error) {
     return { ok: false, status: error.status ?? 1, k6Status }
   }
