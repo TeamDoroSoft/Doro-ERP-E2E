@@ -132,12 +132,12 @@ export default function () {
     const registerBody = parseProblem(registerRes)
     const entryId = registerBody.entryId
     // 서버가 Entry를 실제로 커밋했는지(=정리를 시도해야 하는지)는 entryId 발급 여부로만 판단한다.
-    // registerBody.status가 'WAITING'이 아니거나 누락된 응답 계약 결함이 있어도 entryId가 나왔다면
-    // 이미 실 테넌트에 WAITING 행이 생긴 것이므로 정리(취소)는 반드시 시도해야 한다 — registered(아래,
-    // 케이스 판정용 전체 계약 일치 여부)에 정리 여부를 묶으면 이 경우 취소를 건너뛰어 WAITING 행이
-    // 운영 대기열에 방치된다.
-    const entryCreated = registerRes.status === 201 && !!entryId
-    const registered = entryCreated && registerBody.status === 'WAITING'
+    // registerRes.status가 201이 아니거나 registerBody.status가 'WAITING'이 아닌 응답 계약 결함이
+    // 있어도 entryId가 나왔다면 이미 실 테넌트에 WAITING 행이 생긴 것이므로 정리(취소)는 반드시
+    // 시도해야 한다 — registered(아래, 케이스 판정용 전체 계약 일치 여부)에 정리 여부를 묶으면 이
+    // 경우 취소를 건너뛰어 WAITING 행이 운영 대기열에 방치된다.
+    const entryCreated = !!entryId
+    const registered = registerRes.status === 201 && registerBody.status === 'WAITING' && entryCreated
 
     let listedWaiting = false
     let cancelStatus = null
