@@ -191,7 +191,7 @@ async function changePassword(jar, currentPassword, newPassword) {
   }
 }
 
-// 계정 Rate Limit Bucket(§2.5: 계정당 용량 5, 분당 1 보충)은 이 스크립트가 소모한 만큼 그대로
+// 계정 Rate Limit Bucket(계정당 용량 5, 분당 1 보충)은 이 스크립트가 소모한 만큼 그대로
 // doro-erp-e2e 실행에서 쓸 수 있는 몫이 줄어든다 — 로그인 시도는 성공·실패 관계없이 전부
 // Bucket을 소비한다(비밀번호 검증 전에 차감). 그래서 확실히 알 수 있는 경우엔 확인용 로그인을
 // 아예 생략한다: 방금 새로 만든 계정은 아직 임시 비밀번호 상태인 게 확실하므로 "영구 비밀번호로

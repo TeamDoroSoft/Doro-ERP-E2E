@@ -1,11 +1,12 @@
 import { check, group } from 'k6'
 import { loadDeployEnv } from '../lib/env.js'
 import { freshJar, postJson, header, parseProblem } from '../lib/http.js'
-import { provisioningAvailable, provisionThrowawayOwner, randomToken, randomPassword } from '../lib/provisioning.js'
+import { randomToken } from '../lib/provisioning.js'
 import { record } from '../lib/resultLogger.js'
 
-// AUTH-030, AUTH-031, AUTH-033, AUTH-034 (보고서 §5.5 "잠금·Rate Limit 통제 그룹").
-// AUTH-032(잠금 단계 1→2→4→8→15분 증가)는 실제 clock으로 십수 분을 기다려야 해서 뺐다.
+// AUTH-030, AUTH-031, AUTH-033, AUTH-034 — 잠금·Rate Limit 통제 그룹(배포 Frontend–Backend
+// 종단 검증.md §2 "잠금·Rate Limit·비활성·임시 비밀번호는 전용 Fixture와 격리 Source가 있을 때만
+// 실행한다"). AUTH-032(잠금 단계 1→2→4→8→15분 증가)는 실제 clock으로 십수 분을 기다려야 해서 뺐다.
 // AUTH-035(보충 시간 후 재요청)는 이 파일의 AUTH-031 조사 과정에서 사실상 이미 관찰됐다 —
 // 아래 "실측 결과" 주석 참고.
 export const options = {
@@ -31,7 +32,7 @@ export default function () {
         startedAt,
         durationMs: 0,
         resultCode: 'SKIP_PRECONDITION',
-        errorClass: `${DESTRUCTIVE_FLAG}=true로 명시하지 않으면 실행하지 않음 (보고서 §5.5)`,
+        errorClass: `${DESTRUCTIVE_FLAG}=true로 명시하지 않으면 실행하지 않음`,
       })
     }
     return
@@ -40,48 +41,29 @@ export default function () {
   group('AUTH-030 / AUTH-031: 5회 실패 계정 잠금과 직후 상태', () => {
     const startedAt = new Date().toISOString()
 
-    if (!provisioningAvailable(env)) {
+    // AUTH_LOCKOUT_01 정적 계정을 쓴다(멱등 — 이미 잠겨 있어도 안전). 실 배포 대상 테넌트 DB에
+    // Provisioning API로 계정을 만들지 않는다 — 없으면 SKIP_PRECONDITION.
+    // Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md" 참고.
+    if (!env.staticAccounts.lockout) {
       for (const id of ['AUTH-030', 'AUTH-031']) {
         record(env, {
           testCaseId: id,
           startedAt,
           durationMs: 0,
           resultCode: 'SKIP_PRECONDITION',
-          errorClass: 'Provisioning 자격증명 없음 — 전용 계정 생성 불가',
+          errorClass: 'AUTH_LOCKOUT_01 정적 계정 없음 — 전용 계정 준비 불가',
         })
       }
       return
     }
-
-    const fixture = {
-      tenantCode: `e2e-lockout-${randomToken().slice(0, 10)}`,
-      tenantName: 'Doro E2E Lockout Fixture',
-      storeName: 'Doro E2E Lockout Fixture Store',
-      loginId: 'owner',
-      temporaryPassword: randomPassword('Lockout0'),
-    }
-
-    try {
-      provisionThrowawayOwner(env, fixture)
-    } catch (error) {
-      for (const id of ['AUTH-030', 'AUTH-031']) {
-        record(env, {
-          testCaseId: id,
-          startedAt,
-          durationMs: 0,
-          resultCode: 'ERROR_TRANSPORT',
-          errorClass: error instanceof Error ? error.message : String(error),
-        })
-      }
-      return
-    }
+    const { tenantCode, loginId, password: correctPassword } = env.staticAccounts.lockout
 
     const t030 = Date.now()
     const statuses = []
     for (let i = 0; i < 5; i++) {
       const res = postJson(
         loginUrl,
-        { tenantCode: fixture.tenantCode, loginId: fixture.loginId, password: `wrong-${i}` },
+        { tenantCode, loginId, password: `wrong-${i}` },
         { jar: freshJar() },
       )
       statuses.push(res.status)
@@ -103,14 +85,14 @@ export default function () {
     // 정확히 같아서, 5번째 실패 직후에는 Bucket도 함께 소진돼 있다. 그래서 "잠금 직후" 6번째
     // 요청은 문서가 적은 401(잠금)이 아니라 429 AUTH_RATE_LIMITED로 Fail-Closed된다 — 정확한
     // 비밀번호를 넣어도 마찬가지였다(직접 재현·확인). 두 응답 모두 "안전하게 거절하고 내부
-    // 상세를 노출하지 않는다"는 §2.4/§2.5의 실제 의도는 만족하므로, 이 케이스는 코드가 정확히
+    // 상세를 노출하지 않는다"는 실제 의도는 만족하므로, 이 케이스는 코드가 정확히
     // 401인지가 아니라 "200이 아니고, 안전한 Problem 응답이고, 잠금 관련 내부 정보가 없는지"를
     // 판정 기준으로 삼는다. (참고: 여기서 ~65초 뒤 재시도하면 Bucket 보충과 잠금 만료 시점이
     // 거의 같이 겹쳐서 200이 나오는 것도 확인했다 — AUTH-035가 다루는 상황과 사실상 같다.)
     const t031 = Date.now()
     const sixthRes = postJson(
       loginUrl,
-      { tenantCode: fixture.tenantCode, loginId: fixture.loginId, password: fixture.temporaryPassword },
+      { tenantCode, loginId, password: correctPassword },
       { jar: freshJar() },
     )
     const sixthBody = parseProblem(sixthRes)

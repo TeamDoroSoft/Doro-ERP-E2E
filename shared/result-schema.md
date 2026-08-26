@@ -1,7 +1,7 @@
 # 결과 로그 공용 스키마
 
 `browser/lib/resultLogger.ts`와 `api/lib/resultLogger.js` + `api/lib/report.js`가 각자의 런타임(Node/Playwright, k6)에
-맞게 독립 구현하지만 반드시 동일하게 유지해야 하는 필드 계약. 원본은 보고서 §7.3(JSONL) / §7.1(resultCode) / §7.4(errorCode)이며,
+맞게 독립 구현하지만 반드시 동일하게 유지해야 하는 필드 계약. 이 스키마는 두 구현의 실제 코드가 정본이며,
 이 문서는 그 요약이자 두 구현이 갈라지지 않았는지 비교하는 체크리스트다.
 
 ## 케이스 레코드 (JSONL 한 줄)
@@ -23,13 +23,13 @@
 | `assertions` | object | boolean 위주, 케이스별 세부 판정 |
 | `browser` | object | browser 전용: `consoleErrorCount`/`pageErrorCount`/`failedRequiredRequestCount` |
 | `artifacts.failureScreenshot` | string \| null | 아직 미구현 — 항상 `null` |
-| `errorClass` | string \| null | §7.4 errorCode 표 또는 `ASSERTION_MISMATCH` |
+| `errorClass` | string \| null | 아래 errorCode 표 또는 `ASSERTION_MISMATCH` |
 
-## resultCode (§7.1)
+## resultCode
 
 `PASS`, `FAIL_ASSERTION`, `FAIL_UI`, `FAIL_NETWORK_MAPPING`, `FAIL_PROTECTED_FLOW`, `ERROR_TRANSPORT`, `ERROR_CONFIG`, `SKIP_PRECONDITION`, `ABORT_SAFETY`
 
-## 절대 기록하지 않는 값 (§4.2, §7.4)
+## 절대 기록하지 않는 값 (배포 Frontend–Backend 종단 검증.md §2, §8)
 
 Password, Cookie/Session/CSRF Token 원문, tenantCode/loginId 원문(항상 `accountAlias`로 대체), 응답 Body 전체, 전체 Header.
 
@@ -50,7 +50,7 @@ Password, Cookie/Session/CSRF Token 원문, tenantCode/loginId 원문(항상 `ac
 - 러너별 `summary.json`의 최상위 필드명이 다르다 — browser는 `mandatoryBrowserPassed`, api는
   `mandatoryApiPassed`. `scripts/build-combined-summary.mjs <runId>`(browser/api가 같은 `DORO_RUN_ID`로
   실행됐다는 전제)가 둘을 읽어 `reports/<runId>.combined-summary.json`에 `frontBackConnected`를
-  계산해 넣지만, 이건 보고서 §6.1 전체 판정식(`deploymentIdentityComplete`·
+  계산해 넣지만, 이건 배포 Frontend–Backend 종단 검증.md §7 전체 판정식(`deploymentIdentityComplete`·
   `protectedApiReachedFromBrowser`·`requestCorrelationVerified`·`browserErrorsAbsent`까지 포함)이
   아니라 "필수 케이스 전부 PASS + 민감정보 유출 0건"만 보는 좁은 판정이다 — 그 결과의
   `caveats` 필드에 아직 반영 안 한 조건을 그대로 적어둔다.

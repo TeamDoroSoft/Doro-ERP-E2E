@@ -2,16 +2,10 @@ import { execFileSync } from 'node:child_process'
 import { test, expect, type ConsoleMessage, type Page, type Request } from '@playwright/test'
 import { loadDeployEnv } from '../lib/env'
 import { appendCaseResult, type CaseResultInput } from '../lib/resultLogger'
-import {
-  provisioningAvailable,
-  provisionThrowawayOwner,
-  randomToken,
-  randomPassword,
-  allowLocalSelfSignedCert,
-} from '../lib/provisioning'
+import { randomToken, allowLocalSelfSignedCert } from '../lib/provisioning'
 import { setupRoleFixtures, type RoleAccount } from '../lib/roleFixtures'
 
-// FE-BE-010~015 (보고서 §5.2 "Frontend–Backend 조건부 화면 반응"). FE-BE-001~006과 달리 전부
+// FE-BE-010~015 (배포 Frontend–Backend 종단 검증.md §4 "조건부 Browser 시나리오"). FE-BE-001~006과 달리 전부
 // 조건부다 — Fixture나 안전장치가 없으면 SKIP_PRECONDITION으로 건너뛰고 나머지는 계속 실행한다.
 
 const env = loadDeployEnv()
@@ -209,6 +203,9 @@ test('FE-BE-011 Rate Limit 유발 시 안전한 재시도 안내', async ({ page
 // FE-BE-012: Provider 장애 주입 승인 — Login Provider 사용 불가
 // ---------------------------------------------------------------------------
 const FAULT_INJECTION_FLAG = 'RUN_FAULT_INJECTION_TESTS'
+const IS_LOCAL = env.environment.startsWith('local')
+
+// -- 로컬 Docker Prod-like 경로 (기존 그대로) --------------------------------
 const STORE_ACCESS_CONTAINER = 'doro-erp-local-apps-store-access-api-1'
 const STORE_ACCESS_HEALTH_URL = 'https://localhost:8081/actuator/health'
 
@@ -230,10 +227,81 @@ async function waitForStoreAccessHealthy(timeoutMs = 60_000): Promise<void> {
   throw new Error(`store-access-api가 ${timeoutMs}ms 안에 다시 healthy 상태가 되지 않았습니다`)
 }
 
+// -- 실 배포(EKS) 경로 --------------------------------------------------------
+// Doro-ERP-GitOps deploy/base/store-access-api/{deployment,availability,service}.yaml 기준:
+// Deployment/HPA/Service가 모두 이름 "store-access-api"이고, overlays/prod/alpha에서
+// namespace가 "doro-alpha"로 고정된다. HPA는 minReplicas:2/maxReplicas:4로 CPU(Resource)
+// Metric 하나만 보고 Autoscale하므로, 이 값을 그대로 두고 Deployment만 --replicas=0으로
+// 내리면 HPA Controller가 곧바로(기본 Sync 주기 15초 안) minReplicas 미달을 감지해 다시
+// 올려버린다.
+//
+// (과거 시도: HPA의 minReplicas를 0으로 먼저 낮춰 "일시 정지"시킨 뒤 Deployment를 내리는
+// 방식을 썼었다. 하지만 autoscaling/v2 HPA API는 Object/External 타입 Metric이 최소
+// 하나 있어야만 minReplicas:0을 허용하도록 API Server가 검증한다 — 이 HPA는
+// Resource(CPU) Metric 하나뿐이라 minReplicas:0 Patch 자체가 API Server에서 거부되어
+// 이 경로는 원천적으로 항상 실패했다.)
+//
+// 그래서 minReplicas를 건드리는 대신 HPA를 통째로 삭제해 Autoscale 통제를 잠깐 없앤
+// 다음 Deployment를 --replicas=0으로 내린다. 삭제 전에 HPA의 .spec만 따로 저장해두고
+// (metadata.resourceVersion/uid, status 등 서버 관리 필드는 버린다), 검증이 끝나면
+// Deployment를 원래 Replicas로 되돌린 뒤 저장해둔 .spec으로 `kubectl apply -f -`에
+// Manifest를 흘려보내 HPA를 다시 만든다.
+// PodDisruptionBudget(maxUnavailable:1)은 Eviction API 경로에만 적용되고 Deployment
+// Scale-down 자체는 막지 않으므로 별도로 다룰 필요가 없다.
+//
+// 주의: 이 경로는 사설(Private) EKS API Endpoint에 도달 가능한 kubectl context가 필요하다 —
+// VPN/Bastion 없이는 이 리포지토리를 작업한 환경에서 전혀 검증할 수 없었다. kubectl이
+// 없거나 대상 리소스에 접근할 수 없으면 실행 전 SKIP_PRECONDITION으로 안전하게 건너뛴다.
+// 실제 클러스터 접근 권한이 있는 사람이 처음 실행할 때 결과를 반드시 직접 확인할 것.
+const K8S_NAMESPACE = process.env.DORO_K8S_NAMESPACE ?? 'doro-alpha'
+const K8S_DEPLOYMENT = process.env.DORO_K8S_STORE_ACCESS_DEPLOYMENT ?? 'store-access-api'
+const K8S_HPA = process.env.DORO_K8S_STORE_ACCESS_HPA ?? 'store-access-api'
+
+function kubectl(args: string[], opts: { input?: string } = {}): string {
+  return execFileSync('kubectl', args, { encoding: 'utf8', ...opts }).trim()
+}
+
+function kubectlReachable(): boolean {
+  try {
+    kubectl(['get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '-o', 'name'])
+    kubectl(['get', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '-o', 'name'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+// HPA 삭제 전에 저장해둔 .spec으로 HPA를 다시 만든다 — metadata/status는 서버가 다시
+// 채워주므로 이름/namespace만 함께 넣어준다. kubectl apply -f - 는 YAML뿐 아니라 JSON도
+// 그대로 받아들인다(scripts/verify-provider-malformed-response.mjs의 applyDecoyPod()와
+// 동일하게 execFileSync에 input으로 Manifest 문자열을 흘려보내는 방식).
+function restoreHpa(spec: unknown): void {
+  const manifest = JSON.stringify({
+    apiVersion: 'autoscaling/v2',
+    kind: 'HorizontalPodAutoscaler',
+    metadata: { name: K8S_HPA, namespace: K8S_NAMESPACE },
+    spec,
+  })
+  kubectl(['apply', '-f', '-'], { input: manifest })
+}
+
+async function waitForReadyReplicas(target: number, timeoutMs = 90_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const raw = kubectl([
+      'get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE,
+      '-o', 'jsonpath={.status.readyReplicas}',
+    ])
+    if (Number(raw || '0') === target) return true
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  return false
+}
+
 test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({ page }) => {
-  // store-access-api 재기동에 로컬 실측 약 24초가 걸린다(finally의 waitForStoreAccessHealthy) —
-  // 기본 30초 Timeout으로는 docker stop/페이지 검증/재기동 대기를 다 못 채운다.
-  test.setTimeout(90_000)
+  // store-access-api 재기동에 로컬 실측 약 24초가 걸린다(finally의 복구 대기) — 실 배포 경로는
+  // Pod 재기동까지 더 오래 걸릴 수 있어 여유를 더 크게 잡는다.
+  test.setTimeout(180_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
@@ -244,12 +312,74 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: `${FAULT_INJECTION_FLAG}=true로 명시하지 않으면 실행하지 않음 (보고서 §5.7, 로컬 Docker 컨테이너를 실제로 멈춤)`,
+      errorClass: `${FAULT_INJECTION_FLAG}=true로 명시하지 않으면 실행하지 않음 (배포 Frontend–Backend 종단 검증.md §4 "Provider 장애를 임의로 유발하지 않는다", ${IS_LOCAL ? '로컬 Docker 컨테이너' : `실 배포 EKS의 ${K8S_NAMESPACE}/${K8S_DEPLOYMENT} Deployment`}를 실제로 멈춤)`,
     })
     return
   }
 
-  execFileSync('docker', ['stop', STORE_ACCESS_CONTAINER])
+  if (!IS_LOCAL && !kubectlReachable()) {
+    record({
+      testCaseId: 'FE-BE-012',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: `kubectl로 ${K8S_NAMESPACE} 네임스페이스의 Deployment/HPA "${K8S_DEPLOYMENT}"에 접근할 수 없음 — 실 배포 대상 Provider 장애 주입에는 EKS 사설 API Endpoint에 도달 가능한 kubectl context가 필요하다(VPN/Bastion 필요).`,
+    })
+    return
+  }
+
+  let originalReplicas: string | null = null
+  let hpaSpec: unknown = null
+  let hpaDeleted = false
+
+  // HPA 삭제와 Deployment 원복을 한데 묶은 최선 노력(Best-effort) 복구 — 두 단계 중
+  // 하나가 실패해도 나머지는 계속 시도한다(둘 다 시도하지 않으면 Deployment가 0에
+  // 머물거나 HPA가 없는 채로 남을 수 있다).
+  function restoreNonLocal(): void {
+    if (originalReplicas !== null) {
+      try {
+        kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, `--replicas=${originalReplicas}`])
+      } catch (err) {
+        console.error(
+          `⚠ ${K8S_NAMESPACE}/${K8S_DEPLOYMENT} replicas를 ${originalReplicas}(으)로 복구하지 못했습니다 — 수동 확인 필요: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+      }
+    }
+    if (hpaDeleted && hpaSpec !== null) {
+      try {
+        restoreHpa(hpaSpec)
+      } catch (err) {
+        console.error(
+          `⚠ ${K8S_NAMESPACE}/${K8S_HPA} HPA를 재생성하지 못했습니다 — 수동 확인 필요: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+      }
+    }
+  }
+
+  if (IS_LOCAL) {
+    execFileSync('docker', ['stop', STORE_ACCESS_CONTAINER])
+  } else {
+    // 이 지점부터 HPA 삭제/Deployment Scale-down이 끝나는 지점까지 어디서 던져도(kubectl
+    // delete/scale 자체가 실패하는 경우 포함) 이미 바뀐 것만큼은 반드시 원복을 시도한다.
+    try {
+      originalReplicas = kubectl(['get', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '-o', 'jsonpath={.spec.replicas}'])
+      hpaSpec = JSON.parse(kubectl(['get', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE, '-o', 'json'])).spec
+      kubectl(['delete', 'hpa', K8S_HPA, '-n', K8S_NAMESPACE])
+      hpaDeleted = true
+      kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, '--replicas=0'])
+      const wentDown = await waitForReadyReplicas(0)
+      if (!wentDown) {
+        throw new Error(`${K8S_NAMESPACE}/${K8S_DEPLOYMENT}의 readyReplicas가 0으로 내려가지 않았습니다.`)
+      }
+    } catch (err) {
+      // 복구 없이 그냥 멈추면 실 서비스가 계속 죽어 있게 되므로, 던지기 전에 즉시 원복부터 시도한다.
+      restoreNonLocal()
+      throw err
+    }
+  }
+
   try {
     await page.goto('/pos/login')
     await fillLoginForm(page, 'e2e-fe-be-012-probe', 'probe', 'probe-Password-0012')
@@ -277,8 +407,18 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
 
     expect(pass, `FE-BE-012 실패: status=${status} errorText="${errorText}"`).toBe(true)
   } finally {
-    execFileSync('docker', ['start', STORE_ACCESS_CONTAINER])
-    await waitForStoreAccessHealthy()
+    if (IS_LOCAL) {
+      execFileSync('docker', ['start', STORE_ACCESS_CONTAINER])
+      await waitForStoreAccessHealthy()
+    } else {
+      restoreNonLocal()
+      const recovered = await waitForReadyReplicas(Number(originalReplicas))
+      if (!recovered) {
+        throw new Error(
+          `${K8S_NAMESPACE}/${K8S_DEPLOYMENT}가 원래 readyReplicas(${originalReplicas})로 복구되지 않았습니다 — 직접 확인이 필요합니다.`,
+        )
+      }
+    }
   }
 })
 
@@ -290,33 +430,24 @@ test('FE-BE-010 임시 비밀번호 계정 로그인 시 비밀번호 변경 화
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
 
-  if (!provisioningAvailable(env)) {
+  const account = env.staticAccounts.tempPassword
+  if (!account) {
     record({
       testCaseId: 'FE-BE-010',
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: 'Provisioning 자격증명 없음 — 임시 비밀번호 Fixture 생성 불가',
+      errorClass: 'AUTH_TEMP_PASSWORD_01 정적 계정 없음 — 임시 비밀번호 Fixture 준비 불가',
     })
     return
-  }
-
-  const fixture = {
-    tenantCode: `e2e-temp-pw-${randomToken().slice(0, 10)}`,
-    tenantName: 'Doro E2E FE-BE-010 Fixture',
-    storeName: 'Doro E2E FE-BE-010 Store',
-    loginId: 'owner',
-    temporaryPassword: randomPassword('Fixture010'),
   }
 
   let pass = false
   let status = 0
   let finalPath = ''
   try {
-    await provisionThrowawayOwner(env, fixture)
-
     await page.goto('/pos/login')
-    await fillLoginForm(page, fixture.tenantCode, fixture.loginId, fixture.temporaryPassword)
+    await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
     const res = await submitAndWaitLogin(page)
     status = res.status()
 
@@ -358,13 +489,15 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
 
-  if (!provisioningAvailable(env)) {
+  const { roleOwner, roleManager, roleStaff } = env.staticAccounts
+  const hasStaticRoleAccounts = roleOwner !== null && roleManager !== null && roleStaff !== null
+  if (!hasStaticRoleAccounts) {
     record({
       testCaseId: 'FE-BE-014',
       startedAt,
       durationMs: 0,
       resultCode: 'SKIP_PRECONDITION',
-      errorClass: 'Provisioning 자격증명 없음 — OWNER/MANAGER/STAFF Fixture 생성 불가',
+      errorClass: 'AUTH_ROLE_OWNER_01/MANAGER_01/STAFF_01 정적 계정 없음 — OWNER/MANAGER/STAFF Fixture 준비 불가',
     })
     return
   }
