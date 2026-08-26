@@ -162,6 +162,10 @@ node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUE
 - `QUEUE-001`(`GET /api/v1/queues/fulfillment`)·`QUEUE-002`(`GET /api/v1/queues/entry?businessDate=<오늘>`)는
   전제조건 없이 항상 실행된다 — 목록이 비어 있어도 `200`이다(`FulfillmentQueueController`/`EntryQueueController`
   둘 다 존재 검사 없는 단순 SELECT).
+- `<오늘>`(영업일)은 `AUTH_VALID_01` 소속 매장이 `Asia/Seoul`이라는 전제 아래 UTC+9 고정 오프셋으로
+  계산한다(`queue-connectivity.js`의 `todayBusinessDate()`) — 매장은 원칙상 임의의 IANA Time Zone을
+  가질 수 있지만(`Docs/Specifications/01 업체·매장 관리/ADR.md`), 이 전제는 배포 Frontend–Backend
+  종단 검증.md §10에 명시돼 있다. `AUTH_VALID_01`의 소속 매장 시간대가 바뀌면 이 계산도 함께 갱신해야 한다.
 - `QUEUE-003`(Entry 등록 → `WAITING` 확인 → 취소 → `CANCELLED` 확인 → 재취소)은
   `RUN_DESTRUCTIVE_QUEUE_TESTS=true`가 있어야 실행된다 — 취소된 Entry 행과 그 Store·영업일 대기
   순번 소비를 실 테넌트 데이터에 영구히 남기기 때문이다(배포 Frontend–Backend 종단 검증.md §10 참고).

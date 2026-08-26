@@ -20,11 +20,13 @@ export const options = {
 const DESTRUCTIVE_FLAG = 'RUN_DESTRUCTIVE_QUEUE_TESTS'
 const ALWAYS_ON_IDS = ['QUEUE-001', 'QUEUE-002']
 
-// 영업일은 매장 시간대(기본 Asia/Seoul, UTC+9)의 현지 날짜다 — UTC 그대로 쓰면 KST 00:00~08:59
-// 사이 실행 시 하루 전 날짜가 나와 QUEUE-002/003이 엉뚱한 영업일을 조회·기록한다
-// (Docs/Specifications/01 업체·매장 관리/ADR.md:158-163 "영업일은 Store Time Zone의 LocalDate").
-// 한국은 DST가 없어 고정 +9시간 오프셋으로 충분하고, goja 런타임의 Intl 시간대 지원에
-// 기대지 않아도 된다.
+// 영업일은 매장 시간대의 현지 날짜다(Docs/Specifications/01 업체·매장 관리/ADR.md:158-163
+// "영업일은 Store Time Zone의 LocalDate"). 매장은 원칙상 임의의 IANA Time Zone을 가질 수 있지만,
+// AUTH_VALID_01 소속 매장은 Asia/Seoul(UTC+9)이라고 배포 Frontend–Backend 종단 검증.md §10에
+// 명시적으로 전제한다 — 그 계정이 바뀌면 이 상수도 함께 갱신해야 한다. UTC 그대로 쓰면 KST
+// 00:00~08:59 사이 실행 시 하루 전 날짜가 나와 QUEUE-002/003이 엉뚱한 영업일을 조회·기록하므로,
+// 한국은 DST가 없다는 점을 이용해 고정 +9시간 오프셋으로 계산한다(goja 런타임의 Intl 시간대
+// 지원에 기대지 않아도 됨).
 const STORE_UTC_OFFSET_MINUTES = 9 * 60
 
 function todayBusinessDate() {
