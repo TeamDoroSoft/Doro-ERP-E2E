@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 전체 게이트 — 필수 게이트(run-mandatory-gate.mjs) 전부 + 조건부/파괴적 시나리오
 // (배포 Frontend–Backend 종단 검증.md §4 조건부 Browser, §5의 AUTH-030~035·OPS-002, §6의
-// OPS-005)까지 한 번에 실행한다.
+// OPS-005, §10의 QUEUE-003)까지 한 번에 실행한다.
 //
 // 파괴적 플래그(RUN_DESTRUCTIVE_AUTH_TESTS, RUN_FAULT_INJECTION_TESTS)는 이 스크립트가 절대
 // 대신 켜주지 않는다 — 실행하는 사람이 이 명령을 돌리기 "전에" 직접 export해야만 해당
@@ -26,12 +26,41 @@
 // AUTH-030,031,033,034 단계 직전에 RUN_DESTRUCTIVE_AUTH_TESTS=true일 때만(그 값이 아니면
 // AUTH-015도 파괴적으로 실행되지 않았고 이 단계도 자체 SKIP되므로 대기가 무의미하다) Bucket이
 // 다시 채워질 만큼(약 65초, 과거 실행 관찰 기준) 그대로 대기한다.
+//
+// QUEUE-003(배포 Frontend–Backend 종단 검증.md §10 Tier B)도 AUTH-015와 같은 구조다 —
+// api/scenarios/queue-connectivity.js 한 파일 안에 QUEUE-001/002(Tier A, 상시 실행)와
+// QUEUE-003(Tier B, RUN_DESTRUCTIVE_QUEUE_TESTS=true일 때만 실행)이 같이 있고, 이 파일은
+// run-mandatory-gate.mjs의 "QUEUE-001~002 (k6 queue-connectivity)" 단계에서 이미 호출된다
+// (runFullGate()가 그 run-mandatory-gate.mjs를 먼저 통째로 실행하므로). 그래서 이 파일은
+// AUTH-030처럼 별도 시나리오 파일·별도 runK6Scenario 호출을 새로 두지 않는다 — 그렇게 하면
+// QUEUE-001/002 로그인과 QUEUE-003 등록·취소가 중복 실행되어 AUTH_VALID_01 Bucket을 불필요하게
+// 더 쓰고, 실 테넌트에 취소된 Entry가 한 번 더 남는다. 대신 아래 "QUEUE-003" 단계는 안내만 출력한다.
 import { pathToFileURL } from 'node:url'
 import { runMandatoryGate } from './run-mandatory-gate.mjs'
 import { runStep, guardFlag, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
 
 export async function runFullGate() {
   const steps = await runMandatoryGate()
+
+  steps.push(
+    await runStep('QUEUE-003 (k6 queue-connectivity, RUN_DESTRUCTIVE_QUEUE_TESTS 필요)', () => {
+      if (process.env.RUN_DESTRUCTIVE_QUEUE_TESTS !== 'true') {
+        guardFlag(
+          'RUN_DESTRUCTIVE_QUEUE_TESTS',
+          'QUEUE-003(Entry 등록→취소 상태 변경)',
+          'RUN_DESTRUCTIVE_QUEUE_TESTS=true를 export한 뒤 처음부터(run-mandatory-gate.mjs 단계 포함) 다시 실행하세요.',
+        )
+        return { ok: true, skipped: true }
+      }
+      console.log(
+        '  ℹ QUEUE-003은 여기서 별도로 실행하지 않습니다 — 위 runMandatoryGate()의 ' +
+          '"QUEUE-001~002 (k6 queue-connectivity)" 단계 안에서 같은 k6 파일(api/scenarios/queue-connectivity.js)이 ' +
+          '이 플래그를 직접 읽어 이미 함께 실행·기록했습니다. 결과는 그 단계가 만든 ' +
+          'reports/<runId>.queue-connectivity.results.jsonl에서 QUEUE-003 항목으로 확인하세요.',
+      )
+      return { ok: true, skipped: false }
+    }),
+  )
 
   steps.push(
     await runStep('FE-BE-010~015 (Playwright 조건부 시나리오)', () => {
