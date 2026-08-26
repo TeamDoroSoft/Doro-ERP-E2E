@@ -197,9 +197,44 @@ JMESPath `contains()`가 타입 오류를 냈다 — `Aliases.Items || \`[]\``�
 지난번 CloudFront `enable_gateway_backend`·S3 `AccessDenied` 발견과 정확히 같은 결론을 서로 다른
 경로(CloudFront 설정, GitOps 커밋, 이번엔 S3 객체 존재 여부)로 세 번째 확인해준 것이다.
 
+## 환경변수 주입 (로컬)
+
+값을 채우는 절차는 3단계다. (CI를 통한 주입은 아직 파이프라인 자체가 없어 별도로 정리하지 않는다.)
+
+1. 팀에서 전달받은 실제 값을 준비한다(전달 경로는 기존 `AUTH_VALID_01`을 전달받았던 것과 동일한 Secret Store 경로 — 채팅/이슈에 평문으로 남기지 않는다).
+2. 템플릿을 복사해 실제 값을 채운다: `cp .env.deploy-e2e.example .env.deploy-e2e.local` (`.local` 접미사가 `.gitignore`의 `.env.*.local` 패턴에 걸려 커밋되지 않는다).
+3. 실행 직전에 shell로 로드한다: `set -a; source .env.deploy-e2e.local; set +a`
+
+### 계정별 env var
+
+| 별칭 | env var |
+|---|---|
+| `AUTH_VALID_01`(항상 필요) | `DORO_AUTH_VALID_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_LOCKOUT_01` | `DORO_AUTH_LOCKOUT_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_INACTIVE_EMPLOYEE_01` | `DORO_AUTH_INACTIVE_EMPLOYEE_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_INACTIVE_TENANT_01` | `DORO_AUTH_INACTIVE_TENANT_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_ROLE_OWNER_01` | `DORO_AUTH_ROLE_OWNER_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_ROLE_MANAGER_01` | `DORO_AUTH_ROLE_MANAGER_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_ROLE_STAFF_01` | `DORO_AUTH_ROLE_STAFF_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_TEMP_PASSWORD_01` | `DORO_AUTH_TEMP_PASSWORD_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD` |
+| `AUTH_PASSWORD_ROTATE_01` | `DORO_AUTH_PASSWORD_ROTATE_01_TENANT_CODE` / `_LOGIN_ID` / `_PASSWORD_A` / `_PASSWORD_B`(예외적으로 4값) |
+
+`AUTH_VALID_01` 외 8개는 없어도 실행 자체는 되며, 해당 계정을 쓰는 케이스만 `SKIP_PRECONDITION`으로
+건너뛴다(폴백 없음) — 단 `FE-BE-014`는 `AUTH_ROLE_OWNER_01`/`MANAGER_01`/`STAFF_01` **3개가 전부**
+있어야 실행된다(하나라도 없으면 스킵). 각 계정이 갖춰야 하는 정확한 상태(Role, 직원·테넌트·매장
+상태, 비밀번호 상태)는 `Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"` 참고.
+
+### 계정 값과 별개로 필요한 플래그
+
+계정 값이 다 채워져 있어도, 아래 두 플래그를 실행 전 직접 export하지 않으면 해당 플래그가 지키는
+케이스는 여전히 SKIP된다(오케스트레이터가 대신 켜주지 않는다):
+
+- `RUN_DESTRUCTIVE_AUTH_TESTS=true` — `AUTH-030`/`031`/`033`/`034`(`AUTH_LOCKOUT_01` 사용)
+- `RUN_FAULT_INJECTION_TESTS=true` — `FE-BE-012`, `OPS-001`/`002`/`003`/`005`
+
 ## 실행 전제
 
-- 실제 값은 `.env.deploy-e2e.local`(gitignore 대상) 또는 CI Secret Store에만 넣는다. 커밋 금지.
+- 로컬 실행 시 값을 채우는 방법은 바로 위 "환경변수 주입 (로컬)" 참고. 실제 값은 절대 커밋하지 않는다.
 - `AUTH_VALID_01` = `sample-store`/`owner` (정상 계정). 잠금·비활성·임시비밀번호 등 조건부 Fixture는 준비되는 대로 추가.
 - `FE-BE-003`/`SESS-001`이 공통으로 쓰는 비파괴 조회 API는 `GET /api/v1/orders`로 확정했다 — 로그인 성공 시 실제로 이동하는 `/pos/orders` 화면이 `onMounted`에서 자동 호출하고, Role 제한이 없다([PosOrdersView.vue](../Doro-ERP-Front/src/views/PosOrdersView.vue), [EdgeOrderController.java](../Doro-ERP-Service/apps/edge-api/src/main/java/com/dorosoft/erp/edge/presentation/EdgeOrderController.java)).
 - 배포 전용 실행에서는 Mock, `page.route().fulfill()`, 인증 Session 사전 주입을 금지한다(배포 Frontend–Backend 종단 검증.md §2.1).
