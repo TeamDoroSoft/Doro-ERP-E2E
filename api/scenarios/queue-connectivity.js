@@ -40,8 +40,11 @@ export default function () {
   )
   if (loginRes.status !== 200) {
     const startedAt = new Date().toISOString()
-    const idsToSkip = __ENV[DESTRUCTIVE_FLAG] === 'true' ? [...ALWAYS_ON_IDS, 'QUEUE-003'] : ALWAYS_ON_IDS
-    for (const id of idsToSkip) {
+    // 로그인 실패 시점엔 RUN_DESTRUCTIVE_QUEUE_TESTS 값과 무관하게 QUEUE-003도 실행 불가하므로,
+    // 플래그 상태와 상관없이 항상 세 케이스 모두 기록한다(session-flow.js의 로그인 실패 스킵과
+    // 같은 방식) — 그렇지 않으면 "로그인 실패 + 플래그 꺼짐" 조합에서 QUEUE-003 레코드가 통째로
+    // 빠져 results.jsonl에서 감사 추적이 끊긴다.
+    for (const id of [...ALWAYS_ON_IDS, 'QUEUE-003']) {
       record(env, {
         testCaseId: id,
         startedAt,
@@ -65,7 +68,7 @@ export default function () {
       startedAt,
       durationMs: Date.now() - t0,
       accountAlias: 'AUTH_VALID_01',
-      resultCode: pass ? 'PASS' : 'FAIL_PROTECTED_FLOW',
+      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
       expected: { requestPath: '/api/v1/queues/fulfillment', httpStatus: 200 },
       observed: { httpStatus: res.status },
       requestId: header(res, 'X-Request-Id'),
@@ -85,7 +88,7 @@ export default function () {
       startedAt,
       durationMs: Date.now() - t0,
       accountAlias: 'AUTH_VALID_01',
-      resultCode: pass ? 'PASS' : 'FAIL_PROTECTED_FLOW',
+      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
       expected: { requestPath: '/api/v1/queues/entry', httpStatus: 200 },
       observed: { httpStatus: res.status },
       requestId: header(res, 'X-Request-Id'),
