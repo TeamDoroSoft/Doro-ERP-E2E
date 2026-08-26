@@ -31,8 +31,10 @@ export default function () {
   const protectedUrl = `${env.apiOrigin}${PROTECTED_PATH}`
   const account = env.authValid01
 
-  // 이 스크립트 하나로 AUTH_VALID_01 실계정 로그인을 1회만 소비한다(Rate Limit Bucket).
-  // auth-mandatory.js와 60초 이내에 연달아 돌리지 말 것 — README 참고.
+  // 이 스크립트는 AUTH_VALID_01 실계정 로그인을 총 3회 소비한다(Rate Limit Bucket) — 이 최초
+  // 로그인 1회 + 아래 SESS-007 안의 사전 로그인·재로그인 2회(Session 무효화와 계정 잠금을
+  // 구분하려면 별도 Session에서 다시 로그인해야 해서 줄일 수 없다). auth-mandatory.js와
+  // 충분한 간격 없이 연달아 돌리지 말 것 — README 참고.
   const jar = freshJar()
   const loginRes = postJson(
     loginUrl,

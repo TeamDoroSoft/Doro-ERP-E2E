@@ -19,12 +19,12 @@ k6 run --log-format=raw api/scenarios/auth-mandatory.js > /tmp/auth-mandatory.lo
 node api/lib/build-report.mjs /tmp/auth-mandatory.log auth-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
-# SESS-004/005까지 돌리려면 Provisioning 자격증명도 필요(없으면 그 둘만 SKIP_PRECONDITION)
-export PROVISIONING_ORIGIN=https://internal-store-access-origin   # store-access-api에 직접, Edge 아님
-export STORE_ACCESS_PROVISIONING_USERNAME=***
-export STORE_ACCESS_PROVISIONING_PASSWORD=***
+# SESS-004/005까지 돌리려면 전용 정적 계정도 필요(없으면 그 둘만 SKIP_PRECONDITION, 나머지는 그대로 실행)
+export DORO_AUTH_TEMP_PASSWORD_01_TENANT_CODE=... DORO_AUTH_TEMP_PASSWORD_01_LOGIN_ID=... DORO_AUTH_TEMP_PASSWORD_01_PASSWORD=...
+export DORO_AUTH_PASSWORD_ROTATE_01_TENANT_CODE=... DORO_AUTH_PASSWORD_ROTATE_01_LOGIN_ID=...
+export DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_A=... DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_B=...
 k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/session-flow.log session-flow SESS-001,SESS-002,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 ```
 
 로컬 Docker Prod-like 리허설(자체 서명 TLS)을 대상으로 할 때만 `--insecure-skip-tls-verify`를 추가한다
@@ -36,17 +36,20 @@ DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-mandatory.js > /tmp/auth-mandatory.log 2>&1
 ```
 
-## SESS-004 / SESS-005: 1회용 Fixture
+## SESS-004 / SESS-005: 전용 정적 계정
 
-`SESS-001`/`002`와 달리 `SESS-004`(임시 비밀번호 로그인)·`SESS-005`(비밀번호 변경 후 기존 Session
-거절)는 `AUTH_VALID_01`을 재사용하지 않는다 — 이미 영구 비밀번호 상태라 "임시 비밀번호로 막 로그인한
-계정"을 재현할 수 없기 때문이다. 대신 `api/lib/provisioning.js`가 이 두 케이스 전용 1회용 테넌트+OWNER를
-`PROVISIONING_ORIGIN`(`store-access-api`에 직접, Edge 아님)에 만들어서 쓰고 끝난 뒤 버린다.
+`SESS-001`/`002`/`003`/`006`/`007`과 달리 `SESS-004`(임시 비밀번호 로그인)·`SESS-005`(비밀번호 변경
+후 기존 Session 거절)는 `AUTH_VALID_01`을 재사용하지 않는다 — 이미 영구 비밀번호 상태라 "임시
+비밀번호로 막 로그인한 계정"을 재현할 수 없기 때문이다. 실 테넌트 DB에 Provisioning API로 1회용
+계정을 만드는 경로는 전면 삭제했다(실 테넌트 DB에 추적 안 되는 데이터가 생기는 걸 막기 위함) — 대신
+미리 만들어둔 전용 정적 계정만 쓴다: `SESS-004`는 `AUTH_TEMP_PASSWORD_01`, `SESS-005`는
+`AUTH_PASSWORD_ROTATE_01`(비밀번호 A/B 두 값 중 지금 어느 쪽이 현재 값인지 스스로 판별해 반대쪽으로
+바꾼다). 정확한 계정 상태 요구사항은 `Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"`
+참고.
 
-`PROVISIONING_ORIGIN`/`STORE_ACCESS_PROVISIONING_USERNAME`/`STORE_ACCESS_PROVISIONING_PASSWORD` 중
-하나라도 없으면 `SESS-004`/`005`만 `SKIP_PRECONDITION`으로 건너뛰고 `SESS-001`/`002`는 그대로 실행된다
-— 실제 dev/stage AWS를 대상으로 할 때, Provisioning 자격증명을 일부러 안 넘겨서 테스트가 그 환경에
-알아서 테넌트를 만들지 않게 하는 것도 유효한 선택이다.
+각 계정의 `DORO_<ALIAS>_TENANT_CODE`/`_LOGIN_ID`/`_PASSWORD`(rotate만 `_PASSWORD_A`/`_PASSWORD_B`)
+중 하나라도 없으면 그 계정을 쓰는 케이스만 `SKIP_PRECONDITION`으로 건너뛰고 나머지는 그대로
+실행된다 — 폴백 없음.
 
 ## `AUTH-030`/`031`/`033`/`034`: 잠금·Rate Limit (기본 비활성)
 
@@ -58,15 +61,15 @@ DORO_API_ORIGIN=https://localhost:8080 \
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
 DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
-PROVISIONING_ORIGIN=... STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
+DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/auth-lockout-ratelimit.js > /tmp/lockout.log 2>&1
 node api/lib/build-report.mjs /tmp/lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033,AUTH-034
 ```
 
-- `AUTH-030`/`031`(5회 실패 계정 잠금)도 `SESS-004`/`005`처럼 이 케이스 전용 1회용 계정을 새로
-  만들어 쓴다 — Provisioning 자격증명이 없으면 이 둘만 `SKIP_PRECONDITION`.
+- `AUTH-030`/`031`(5회 실패 계정 잠금)은 전용 정적 계정 `AUTH_LOCKOUT_01`을 쓴다(멱등 — 이미
+  잠겨 있어도 안전) — 없으면 이 둘만 `SKIP_PRECONDITION`.
 - `AUTH-033`(존재하지 않는 loginId로 계정 Bucket 소진)·`AUTH-034`(격리 IP에서 IP Bucket 소진)는
-  실재하지 않는 가짜 tenantCode/loginId만 쓰므로 Provisioning 자격증명이 없어도 실행된다.
+  실재하지 않는 가짜 tenantCode/loginId만 쓰므로 정적 계정이 없어도 실행된다.
 - `AUTH-032`(잠금 1→2→4→8→15분 단계 증가)와 `AUTH-035`(충분한 보충 시간 후 재요청)는 실제 clock으로
   몇 분을 기다려야 해서 아직 넣지 않았다.
 
@@ -95,8 +98,9 @@ Docker 네트워크)에서는 이 문제가 없어 안전하게 실행해도 된
 
 ```bash
 DORO_API_ORIGIN=https://doro.minseok.click \
-DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
-PROVISIONING_ORIGIN=... STORE_ACCESS_PROVISIONING_USERNAME=... STORE_ACCESS_PROVISIONING_PASSWORD=... \
+DORO_AUTH_INACTIVE_EMPLOYEE_01_TENANT_CODE=... DORO_AUTH_INACTIVE_EMPLOYEE_01_LOGIN_ID=... DORO_AUTH_INACTIVE_EMPLOYEE_01_PASSWORD=... \
+DORO_AUTH_INACTIVE_TENANT_01_TENANT_CODE=... DORO_AUTH_INACTIVE_TENANT_01_LOGIN_ID=... DORO_AUTH_INACTIVE_TENANT_01_PASSWORD=... \
+DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
   k6 run --log-format=raw api/scenarios/auth-account-nonexposure.js > /tmp/nonexposure.log 2>&1
 node api/lib/build-report.mjs /tmp/nonexposure.log auth-account-nonexposure AUTH-011,AUTH-012,AUTH-013,AUTH-014,AUTH-015
@@ -106,9 +110,10 @@ node api/lib/build-report.mjs /tmp/nonexposure.log auth-account-nonexposure AUTH
 
 | ID | 필요한 것 |
 |---|---|
-| `AUTH-011`/`012` | 없음 — 실재하지 않는 가짜 tenantCode/loginId만 씀(`AUTH_VALID_01`도 Provisioning도 불필요) |
-| `AUTH-013`(INACTIVE 직원)/`014`(INACTIVE 테넌트) | Provisioning 자격증명만 있으면 됨 — `SESS-004/005`와 같은 급의 위험도(1회용 Fixture 조작)라 `RUN_DESTRUCTIVE_AUTH_TESTS`는 요구하지 않음 |
-| `AUTH-015`(잠금 상태) | Provisioning 자격증명 **+** `RUN_DESTRUCTIVE_AUTH_TESTS=true` — `auth-lockout-ratelimit.js`와 같은 이유로 계정을 실제로 잠그기 때문 |
+| `AUTH-011`/`012` | 없음 — 실재하지 않는 가짜 tenantCode/loginId만 씀(정적 계정 불필요) |
+| `AUTH-013`(INACTIVE 직원) | 전용 정적 계정 `AUTH_INACTIVE_EMPLOYEE_01`만 있으면 됨 — `RUN_DESTRUCTIVE_AUTH_TESTS`는 요구하지 않음 |
+| `AUTH-014`(INACTIVE 테넌트) | 전용 정적 계정 `AUTH_INACTIVE_TENANT_01`만 있으면 됨 — 마찬가지로 `RUN_DESTRUCTIVE_AUTH_TESTS` 불필요 |
+| `AUTH-015`(잠금 상태) | 전용 정적 계정 `AUTH_LOCKOUT_01` **+** `RUN_DESTRUCTIVE_AUTH_TESTS=true` — `auth-lockout-ratelimit.js`와 같은 이유로 계정을 실제로 잠그기 때문. `run-mandatory-gate.mjs`는 이 플래그를 절대 켜지 않으므로 그 안에서는 항상 `SKIP_PRECONDITION`이고, 필수 통과 판정에도 포함하지 않는다(`run-full-gate.mjs`에서만 `RUN_DESTRUCTIVE_AUTH_TESTS=true`로 실행) |
 
 구현 중 실제로 잡은 버그 3개:
 
@@ -157,13 +162,16 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 | 스크립트 | `AUTH_VALID_01` 로그인 호출 수 |
 |---|---|
 | `auth-mandatory.js` | 4회 (`AUTH-001`+`AUTH-002`+`AUTH-024` 병합 1회, `AUTH-003` 1회, `AUTH-004` 1회, `AUTH-010` 1회) |
-| `session-flow.js` | 1회 (`SESS-001`/`002`) — `SESS-004`/`005`는 1회용 Fixture를 따로 써서 이 Bucket을 건드리지 않는다 |
-| **`../browser` (Playwright) FE-BE-002~006** | 5회 (성공 로그인 4회 + 실패 로그인 1회) |
+| `session-flow.js` | 3회 (`SESS-001`/`002`/`003`/`006` 공용 최초 로그인 1회 + `SESS-007` 내부의 사전 로그인·재로그인 2회) — `SESS-004`/`005`는 별도 정적 계정(`AUTH_TEMP_PASSWORD_01`/`AUTH_PASSWORD_ROTATE_01`)을 써서 이 Bucket을 건드리지 않는다 |
+| **`../browser` (Playwright) FE-BE-002~006** | 성공 로그인 여러 회 + 실패 로그인 1회 |
 
-**전체를 60초 안에 이어서 돌리면 합계가 5를 넘어 뒤에 실행되는 케이스가 `429 AUTH_RATE_LIMITED`로
-잘못 실패할 수 있다.** 다음 중 하나로 대응한다.
+**용량 5·분당 1회 보충인데 위 세 스크립트를 합치면 한 번에 5를 훌쩍 넘는다 — 대기 없이 이어서
+돌리면 뒤에 실행되는 케이스가 실제 결함이 아닌 `429 AUTH_RATE_LIMITED`로 잘못 실패한다.** 이 문제는
+저장소 루트의 `scripts/run-mandatory-gate.mjs`(오케스트레이터)가 세 단계 사이에 Bucket이 완전히
+다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다 — 아래 예시처럼 손으로 직접
+이어붙여 실행할 때만 다음 중 하나로 직접 대응해야 한다.
 
-- `auth-mandatory.js` → `session-flow.js` → `browser` 순서로 실행하되 각 사이 최소 60초 이상 간격을 둔다.
+- `auth-mandatory.js` → `session-flow.js` → `browser` 순서로 실행하되 각 사이 최소 5분 이상 간격을 둔다.
 - 반복 실행이 잦다면 dev 환경에서 `sample-store`/`owner` 전용으로 Rate Limit 용량을 늘리는 걸
   인프라팀에 요청한다(운영 계정에는 적용하지 않는다).
 - Client IP Bucket(기본 용량 30, 분당 6 보충)은 이 정도 호출량으로는 넉넉하므로 별도 조치 불필요.

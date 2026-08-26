@@ -5,7 +5,7 @@
 // 돈다. 대신 안 켜져 있으면 어떤 케이스가 SKIP되는지, 켜려면 뭘 해야 하는지 guidance만
 // 안내한다(README/api/README.md에 이미 있는 설명을 실행 시점에 다시 보여주는 것뿐).
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -70,8 +70,11 @@ export function runPlaywrightSpec(specFile) {
 }
 
 // k6는 handleSummary()가 VU 실행과 격리된 별도 VM에서 돌아 결과를 못 봐서(resultLogger.js
-// 주석 참고), --log-format=raw로 stdout에 찍은 케이스별 JSON 줄을 파일로 모았다가
-// build-report.mjs로 후처리해야 한다 — README의 "실행" 절과 같은 2단계.
+// 주석 참고), 케이스별 JSON 줄을 파일로 모았다가 build-report.mjs로 후처리해야 한다 — README의
+// "실행" 절과 같은 2단계. console.log()로 찍은 그 JSON 줄은 --log-format=raw를 줘도 stdout이
+// 아니라 stderr로 나온다(k6 v2.2.0 실측 확인) — execFileSync로 stdout만 캡처하면 결과가 전부
+// 빈 파일이 돼 모든 케이스가 "결과 0건"으로 잡히는 버그가 있었다. --console-output으로 k6가
+// 그 줄들을 직접 파일에 쓰게 해서 stdout/stderr 라우팅과 무관하게 만든다.
 export function runK6Scenario(scenarioRelPath, suiteName, caseIds) {
   mkdirSync(REPORTS_DIR, { recursive: true })
   const runId = process.env.DORO_RUN_ID
@@ -81,24 +84,23 @@ export function runK6Scenario(scenarioRelPath, suiteName, caseIds) {
   // 인증서를 쓰므로 이 플래그가 전혀 필요 없고, 붙이면 오히려 실 배포 검증을 약화시킨다
   // (README "로컬 Docker Prod-like 리허설 모드"의 수동 명령과 같은 조건).
   const isLocalRehearsal = (process.env.DORO_ENVIRONMENT ?? '').startsWith('local')
+  const consoleOutputArg = `--console-output=${rawLogPath}`
   const k6Args = isLocalRehearsal
-    ? ['run', '--insecure-skip-tls-verify', '--log-format=raw', scenarioRelPath]
-    : ['run', '--log-format=raw', scenarioRelPath]
+    ? ['run', '--insecure-skip-tls-verify', '--log-format=raw', consoleOutputArg, scenarioRelPath]
+    : ['run', '--log-format=raw', consoleOutputArg, scenarioRelPath]
 
   let k6Status = 0
   try {
-    const output = execFileSync('k6', k6Args, {
+    execFileSync('k6', k6Args, {
       cwd: REPO_ROOT,
       env: process.env,
-      encoding: 'utf8',
-      // 실패(threshold 미달)해도 로그는 그대로 받아서 후처리해야 하므로, 여기서 던지지 않고
-      // 아래 catch에서 stdout을 그대로 흡수한다.
+      stdio: 'inherit',
       maxBuffer: 64 * 1024 * 1024,
     })
-    writeFileSync(rawLogPath, output, 'utf8')
   } catch (error) {
+    // 실패(threshold 미달)해도 --console-output 파일은 그대로 남아 있으므로 여기서는 종료
+    // 코드만 기록하고, 아래 build-report.mjs 후처리는 그대로 진행한다.
     k6Status = error.status ?? 1
-    writeFileSync(rawLogPath, `${error.stdout ?? ''}`, 'utf8')
   }
 
   try {

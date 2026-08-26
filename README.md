@@ -133,7 +133,15 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 ```bash
 export DORO_FRONTEND_ORIGIN=https://doro.minseok.click
 export DORO_API_ORIGIN=https://doro.minseok.click
+export DORO_ENVIRONMENT=prod-alpha   # 실 배포 대상 이름 — 결과 리포트에 기록됨(미설정 시 "dev"로 잘못 기록됨)
 export DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=...
+
+# 종합 판정(passConnected)의 deploymentIdentityComplete 조건 때문에 이 단계가 필수다 — 반드시
+# 위 값들을 export한 "뒤에", run-mandatory-gate.mjs를 실행하기 "전에" 아래 두 줄로 Revision 4개를
+# 채운다(순서가 바뀌면 안 됨 — "Deployment Identity(Revision) 채우기" 절 참고).
+AWS_PROFILE=erp-prod node scripts/resolve-deployment-identity.mjs
+set -a; source .env.deployment-identity.local; set +a
+
 node scripts/run-mandatory-gate.mjs
 ```
 
