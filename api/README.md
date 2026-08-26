@@ -72,8 +72,10 @@ node api/lib/build-report.mjs /tmp/lockout.log auth-lockout-ratelimit AUTH-030,A
   잠겨 있어도 안전) — 없으면 이 둘만 `SKIP_PRECONDITION`.
 - `AUTH-033`(존재하지 않는 loginId로 계정 Bucket 소진)·`AUTH-034`(격리 IP에서 IP Bucket 소진)는
   실재하지 않는 가짜 tenantCode/loginId만 쓰므로 정적 계정이 없어도 실행된다.
-- `AUTH-032`(잠금 1→2→4→8→15분 단계 증가)와 `AUTH-035`(충분한 보충 시간 후 재요청)는 실제 clock으로
-  몇 분을 기다려야 해서 아직 넣지 않았다.
+- `AUTH-032`(잠금 1→2→4→8→15분 단계 증가)는 실제 clock으로 15분 이상 기다려야 해서 아직 넣지 않았다.
+- `AUTH-035`(충분한 보충 시간 후 재요청)는 시간 비용 때문이 아니라, 바로 위 `AUTH-031` 조사 과정에서
+  사실상 이미 관찰돼(계정 Bucket 리필과 잠금 만료 시점이 겹쳐 `200`이 나오는 것을 확인) 별도로
+  구현하지 않았다.
 
 **⚠️ `AUTH-034`는 실 배포(dev/stage/prod) 대상으로 절대 공유 네트워크에서 실행하지 말 것.** Client IP
 Rate Limit Bucket을 의도적으로 소진시키는 케이스라, 사무실 Wi-Fi·공유 VPN·공유 NAT처럼 다른 사람과
@@ -211,6 +213,12 @@ browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 �
 - 세분화된 5단계 종료 코드(0/1/2/3/4)는 아직 없다. 지금은 k6 자체의 `checks` 임계치
   (`rate==1`)와 `build-report.mjs`의 exit code(실패 케이스가 있으면 1)로 하나라도 실패하면 비정상
   종료하는 수준만 구현돼 있다. `resultCode`별 세분화된 종료 코드가 필요하면 후속 작업이 남아 있다.
-- `AUTH-032`(잠금 단계 증가)·`AUTH-035`(보충 시간 후 재요청)는 실제 clock 대기 비용이 커서,
-  `OPS-002`(배포 Frontend–Backend 종단 검증.md §5)·`OPS-004`/`005`(같은 문서 §6)는 WAF·ALB·Pod 단위
-  실제 인프라가 전제라 로컬로 의미 있게 재현이 안 돼서 아직 구현하지 않았다.
+- `AUTH-032`(잠금 단계 1→2→4→8→15분 증가)는 기술적으로는 구현 가능하지만 실제 시계로 15분 이상
+  대기해야 해서 자동화 스위트에 넣지 않았다.
+- `AUTH-035`(보충 시간 후 재요청)는 시간 비용 때문이 아니라, `AUTH-031` 조사 과정에서 사실상 이미
+  관찰돼 별도 구현 없이 문서화만 했다(`api/scenarios/auth-lockout-ratelimit.js`의 "실측 결과" 주석
+  참고 — 계정 Bucket 리필과 잠금 만료 시점이 겹쳐서 `200`이 나오는 것을 확인한 부분. README.md
+  "미구현 항목 설명"과 같은 분류).
+- `OPS-002`/`004`/`005`는 "미구현"이 아니다 — 코드는 이미 완성돼 있고(`scripts/verify-provider-malformed-response.mjs`/`verify-edge-boundary.mjs`/`verify-partial-pod-failure.mjs`),
+  `OPS-004`만 2026-08-25에 실 AWS 배포로 PASS까지 확인했다. `OPS-002`/`005`는 이 작업 환경에 EKS
+  접근 권한이 없어 **실행 검증**만 못 한 상태다(README.md "주의사항"의 EKS 접근 미검증 경고 참고).
