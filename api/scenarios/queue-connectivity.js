@@ -20,8 +20,15 @@ export const options = {
 const DESTRUCTIVE_FLAG = 'RUN_DESTRUCTIVE_QUEUE_TESTS'
 const ALWAYS_ON_IDS = ['QUEUE-001', 'QUEUE-002']
 
+// 영업일은 매장 시간대(기본 Asia/Seoul, UTC+9)의 현지 날짜다 — UTC 그대로 쓰면 KST 00:00~08:59
+// 사이 실행 시 하루 전 날짜가 나와 QUEUE-002/003이 엉뚱한 영업일을 조회·기록한다
+// (Docs/Specifications/01 업체·매장 관리/ADR.md:158-163 "영업일은 Store Time Zone의 LocalDate").
+// 한국은 DST가 없어 고정 +9시간 오프셋으로 충분하고, goja 런타임의 Intl 시간대 지원에
+// 기대지 않아도 된다.
+const STORE_UTC_OFFSET_MINUTES = 9 * 60
+
 function todayBusinessDate() {
-  return new Date().toISOString().slice(0, 10)
+  return new Date(Date.now() + STORE_UTC_OFFSET_MINUTES * 60 * 1000).toISOString().slice(0, 10)
 }
 
 export default function () {
@@ -123,8 +130,14 @@ export default function () {
       { jar, headers: { 'Idempotency-Key': idempotencyKey } },
     )
     const registerBody = parseProblem(registerRes)
-    const registered = registerRes.status === 201 && registerBody.status === 'WAITING'
     const entryId = registerBody.entryId
+    // 서버가 Entry를 실제로 커밋했는지(=정리를 시도해야 하는지)는 entryId 발급 여부로만 판단한다.
+    // registerBody.status가 'WAITING'이 아니거나 누락된 응답 계약 결함이 있어도 entryId가 나왔다면
+    // 이미 실 테넌트에 WAITING 행이 생긴 것이므로 정리(취소)는 반드시 시도해야 한다 — registered(아래,
+    // 케이스 판정용 전체 계약 일치 여부)에 정리 여부를 묶으면 이 경우 취소를 건너뛰어 WAITING 행이
+    // 운영 대기열에 방치된다.
+    const entryCreated = registerRes.status === 201 && !!entryId
+    const registered = entryCreated && registerBody.status === 'WAITING'
 
     let listedWaiting = false
     let cancelStatus = null
@@ -134,7 +147,7 @@ export default function () {
     let repeatConflictOk = false
 
     try {
-      if (registered && entryId) {
+      if (entryCreated) {
         const listRes = getJson(`${entryUrl}?businessDate=${businessDate}`, { jar })
         const listBody = parseProblem(listRes)
         listedWaiting =
@@ -143,10 +156,10 @@ export default function () {
           listBody.some((e) => e.entryId === entryId && e.status === 'WAITING')
       }
     } finally {
-      // 앞의 목록 조회 단언이 실패해도 등록된 Entry가 WAITING 상태로 방치되지 않도록, 등록에
-      // 성공했다면 취소는 반드시 시도한다(verify-partial-pod-failure.mjs의 finally 기반 복구와
+      // 앞의 목록 조회 단언이 실패해도 등록된 Entry가 WAITING 상태로 방치되지 않도록, Entry가
+      // 생성됐다면 취소는 반드시 시도한다(verify-partial-pod-failure.mjs의 finally 기반 복구와
       // 같은 "항상 정리 시도" 철학).
-      if (registered && entryId) {
+      if (entryCreated) {
         const cancelRes = postJson(`${entryUrl}/${entryId}/cancel`, {}, { jar })
         const cancelBody = parseProblem(cancelRes)
         cancelStatus = cancelRes.status
