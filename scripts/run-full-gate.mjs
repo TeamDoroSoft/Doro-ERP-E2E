@@ -35,6 +35,14 @@
 // AUTH-030처럼 별도 시나리오 파일·별도 runK6Scenario 호출을 새로 두지 않는다 — 그렇게 하면
 // QUEUE-001/002 로그인과 QUEUE-003 등록·취소가 중복 실행되어 AUTH_VALID_01 Bucket을 불필요하게
 // 더 쓰고, 실 테넌트에 취소된 Entry가 한 번 더 남는다. 대신 아래 "QUEUE-003" 단계는 안내만 출력한다.
+//
+// CATALOG-004~006(§10 Tier B)도 정확히 같은 구조·같은 이유다 — api/scenarios/catalog-connectivity.js
+// 한 파일 안에 CATALOG-001~003(Tier A)과 CATALOG-004~006(Tier B, RUN_DESTRUCTIVE_CATALOG_TESTS=true일
+// 때만 실행)이 같이 있고, 이 파일은 run-mandatory-gate.mjs의 "CATALOG-001~003 (k6 catalog-connectivity)"
+// 단계에서 이미 호출된다. 여기서 별도 runK6Scenario를 또 호출하면 CATALOG-001~003 조회와
+// CATALOG-004~006의 Category·Product 생성·수정이 중복 실행되어 실 테넌트(e2e-auth-active)에
+// 겹치는 이름의 Category·Product가 한 번 더 영구히 남는다. 아래 "CATALOG-004~006" 단계도 안내만
+// 출력한다.
 import { pathToFileURL } from 'node:url'
 import { runMandatoryGate } from './run-mandatory-gate.mjs'
 import { runStep, guardFlag, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
@@ -57,6 +65,26 @@ export async function runFullGate() {
           '"QUEUE-001~002 (k6 queue-connectivity)" 단계 안에서 같은 k6 파일(api/scenarios/queue-connectivity.js)이 ' +
           '이 플래그를 직접 읽어 이미 함께 실행·기록했습니다. 결과는 그 단계가 만든 ' +
           'reports/<runId>.queue-connectivity.results.jsonl에서 QUEUE-003 항목으로 확인하세요.',
+      )
+      return { ok: true, skipped: false }
+    }),
+  )
+
+  steps.push(
+    await runStep('CATALOG-004~006 (k6 catalog-connectivity, RUN_DESTRUCTIVE_CATALOG_TESTS 필요)', () => {
+      if (process.env.RUN_DESTRUCTIVE_CATALOG_TESTS !== 'true') {
+        guardFlag(
+          'RUN_DESTRUCTIVE_CATALOG_TESTS',
+          'CATALOG-004~006(Category·Product 생성·수정·품절 전환)',
+          'RUN_DESTRUCTIVE_CATALOG_TESTS=true를 export한 뒤 처음부터(run-mandatory-gate.mjs 단계 포함) 다시 실행하세요.',
+        )
+        return { ok: true, skipped: true }
+      }
+      console.log(
+        '  ℹ CATALOG-004~006은 여기서 별도로 실행하지 않습니다 — 위 runMandatoryGate()의 ' +
+          '"CATALOG-001~003 (k6 catalog-connectivity)" 단계 안에서 같은 k6 파일(api/scenarios/catalog-connectivity.js)이 ' +
+          '이 플래그를 직접 읽어 이미 함께 실행·기록했습니다. 결과는 그 단계가 만든 ' +
+          'reports/<runId>.catalog-connectivity.results.jsonl에서 CATALOG-004~006 항목으로 확인하세요.',
       )
       return { ok: true, skipped: false }
     }),

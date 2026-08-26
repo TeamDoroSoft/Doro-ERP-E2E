@@ -40,9 +40,10 @@ doro-erp-e2e/
 개별 스위트를 한 번에 이어 실행하는 `scripts/run-mandatory-gate.mjs`와 `scripts/run-full-gate.mjs`도
 추가했다. 포함 범위와 파괴적 항목 안전장치는 아래 "오케스트레이션 스크립트 사용법" 참고.
 
-**`queue-api`(대기열)와 `commerce-api` Catalog 도메인 연결성 검증(`QUEUE-001`~`003`,`CATALOG-001`~`003`)도
-추가했다** — 배포 Frontend–Backend 종단 검증.md §10. `AUTH_VALID_01` 하나만으로 항상 실행되고, 전용
-정적 계정을 새로 요구하지 않는다.
+**`queue-api`(대기열)와 `commerce-api` Catalog 도메인 연결성 검증(`QUEUE-001`~`003`,`CATALOG-001`~`006`)도
+추가했다** — 배포 Frontend–Backend 종단 검증.md §10. Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`)는
+`AUTH_VALID_01` 하나만으로 항상 실행되고, 전용 정적 계정을 새로 요구하지 않는다. Tier B의
+`CATALOG-004`~`006`은 `AUTH_ROLE_OWNER_01` 정적 계정을 쓴다(아래 설명 참고).
 
 | ID | Tier | 시나리오 | 구현 위치 |
 |---|---|---|---|
@@ -52,11 +53,21 @@ doro-erp-e2e/
 | `CATALOG-001` | A | `GET /api/v1/catalog/menu` `200` | `api/scenarios/catalog-connectivity.js` |
 | `CATALOG-002` | A | `GET /api/v1/catalog/categories` `200` | `api/scenarios/catalog-connectivity.js` |
 | `CATALOG-003` | A | `GET /api/v1/catalog/products` `200` | `api/scenarios/catalog-connectivity.js` |
+| `CATALOG-004` | B | Category 생성 → 목록 확인 → `PATCH`+`If-Match` 수정 → 확인 → 비활성화 | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
+| `CATALOG-005` | B | 전용 Category 생성 → Product 생성 → 목록 확인 → 수정 → 확인 → 상품·Category 비활성화 | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
+| `CATALOG-006` | B | 품절 `true`→확인→`false`→확인(`CATALOG-005`의 Product 재사용, 완전 가역) | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
 
 `QUEUE-003`은 취소된 Entry 행과 대기 순번 소비를 실 테넌트 데이터에 영구히 남기는 상태 변경 흐름이라
 `RUN_DESTRUCTIVE_QUEUE_TESTS=true`를 명시해야 실행된다 — `AUTH-030`~`034`가 쓰는
 `RUN_DESTRUCTIVE_AUTH_TESTS`는 인증 도메인 전용 위험(계정 잠금·Rate Limit)을 이름에 명시한 플래그라
-대기열 도메인 상태 변경에 재사용하지 않고 별도 플래그를 뒀다. 자세한 내용은 `api/README.md` 참고.
+대기열 도메인 상태 변경에 재사용하지 않고 별도 플래그를 뒀다. `CATALOG-004`~`006`도 같은 이유로
+`RUN_DESTRUCTIVE_CATALOG_TESTS`라는 Catalog 도메인 전용 플래그를 별도로 뒀다 — 셋 다 하나로 묶은
+이유는 `CATALOG-006`(가역)조차 `CATALOG-005`가 만든 Product 없이는 단독 실행이 불가능해서
+독립적으로 켜고 끌 실익이 없기 때문이다. `CATALOG-004`~`006`은 `CATALOG-001`~`003`과 달리
+`AUTH_VALID_01`(실 데모 테넌트 `sample-store`)이 아니라 `AUTH_ROLE_OWNER_01`(실 고객이 없는 합성
+테넌트 `e2e-auth-active`)로 로그인한다 — `DELETE` Endpoint가 없어 생성한 Category·Product가
+영구히 남기 때문에, 그 잔여물을 실 데모 데이터가 아니라 전용 합성 테넌트에만 남기기 위해서다.
+자세한 내용은 `api/README.md` 참고.
 
 **잠금·Rate Limit(`AUTH-030`,`031`,`033`,`034`)과 장애 주입(`OPS-001`,`003`)도 추가했다** — 기본으로는
 실행되지 않는다(안전 장치):
@@ -165,7 +176,7 @@ node scripts/run-mandatory-gate.mjs
 
 ## 조건부/파괴적 항목을 구분한 이유
 
-이 구분은 `Docs/Specifications/운영·배포/배포 Frontend–Backend 종단 검증.md` 문서 자체의 구조를 그대로 따른다 — §3 필수 Browser Gate + §5 공통 계약의 배포 재검증(대표 Slice) + §6의 비파괴 항목(`OPS-004`) + §10의 Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`)만 "필수 게이트"(`run-mandatory-gate.mjs`)에 넣었다. 반대로 §4 조건부 Browser 시나리오, §5의 잠금/Rate Limit·Provider 오응답(`OPS-002`), §6의 Pod 장애 주입(`OPS-005`), §10의 Tier B(`QUEUE-003`)처럼 실제 서비스·계정·Pod·Service·테넌트 데이터에 실질적인 영향을 주는 항목은 "전체 게이트"(`run-full-gate.mjs`)로 분리해, 명시적 승인(플래그 또는 `--confirm`) 없이는 절대 자동으로 돌지 않도록 설계했다.
+이 구분은 `Docs/Specifications/운영·배포/배포 Frontend–Backend 종단 검증.md` 문서 자체의 구조를 그대로 따른다 — §3 필수 Browser Gate + §5 공통 계약의 배포 재검증(대표 Slice) + §6의 비파괴 항목(`OPS-004`) + §10의 Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`)만 "필수 게이트"(`run-mandatory-gate.mjs`)에 넣었다. 반대로 §4 조건부 Browser 시나리오, §5의 잠금/Rate Limit·Provider 오응답(`OPS-002`), §6의 Pod 장애 주입(`OPS-005`), §10의 Tier B(`QUEUE-003`,`CATALOG-004`~`006`)처럼 실제 서비스·계정·Pod·Service·테넌트 데이터에 실질적인 영향을 주는 항목은 "전체 게이트"(`run-full-gate.mjs`)로 분리해, 명시적 승인(플래그 또는 `--confirm`) 없이는 절대 자동으로 돌지 않도록 설계했다.
 
 ## 미구현 항목 설명
 
@@ -181,6 +192,10 @@ node scripts/run-mandatory-gate.mjs
 ### C. 실행 비용 때문에 제외
 
 - `AUTH-032`(잠금 단계 1→2→4→8→15분 증가) — 기술적으로는 구현 가능하지만 실제 시계로 15분 이상 대기해야 해서 자동화 스위트에 넣지 않았다.
+
+### D. 실행 자체의 위험 때문에 의도적으로 제외 (구현 난이도와 무관)
+
+- `POST /api/v1/sales/daily/{date}/close`(영업일 마감) — `CATALOG-004`~`006`을 추가하며 함께 검토했으나, 되돌릴 Endpoint가 없는 회계·정산 확정 동작이라 반복 실행 시 그 영업일을 영구히 잠그는 실제 재무 리스크가 있다. `QUEUE-003`이 남기는 부작용(취소된 Entry 행, 대기 순번 소비)이나 `CATALOG-004`~`006`이 남기는 부작용(비활성화된 Category·Product)과 달리 "정상적으로 끝나면 무해"가 성립하지 않는 종류의 상태 변경이라, A/B/C 어디에도 넣지 않고 별도 항목으로 뺐다 — 구현이 어렵거나 시간이 걸려서가 아니라 실행 자체가 위험해서 자동화 스위트 대상에서 제외했다.
 
 **참고**: `FE-BE-012`/`OPS-001`/`OPS-002`/`OPS-005`, 그리고 `AUTH-013`/`014`/`015`, `AUTH-030`/`031`,
 `FE-BE-010`/`014`, `SESS-004`/`005`는 위 A/B/C와 다르다 — "미구현"이 아니라 코드는 이미 완성돼 있고,
