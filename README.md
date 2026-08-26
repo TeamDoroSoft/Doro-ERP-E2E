@@ -45,6 +45,12 @@ doro-erp-e2e/
 `AUTH_VALID_01` 하나만으로 항상 실행되고, 전용 정적 계정을 새로 요구하지 않는다. Tier B의
 `CATALOG-004`~`006`은 `AUTH_ROLE_OWNER_01` 정적 계정을 쓴다(아래 설명 참고).
 
+**`audit-api`(감사 로그)와 `commerce-api` sales 도메인 연결성 검증(`AUDIT-001`,`SALES-001`)도
+추가했다** — 같은 §10. 둘 다 Tier A(비파괴 조회)이고 `AUTH_VALID_01` 하나만으로 실행된다. 별도
+파일(`api/scenarios/audit-sales-connectivity.js`)로 합쳐뒀다 — 이유는 아래 "⚠️ 계정 Rate Limit
+Bucket 주의"와 `api/README.md` 참고. `ORDER-001`은 §10 정의 검토 과정에서 `SESS-001`과 완전히
+같은 성격(단일 인증 GET으로 Edge 라우팅 확인)이라 중복으로 판단해 별도 구현 없이 폐기했다.
+
 | ID | Tier | 시나리오 | 구현 위치 |
 |---|---|---|---|
 | `QUEUE-001` | A | `GET /api/v1/queues/fulfillment` `200` | `api/scenarios/queue-connectivity.js` |
@@ -56,6 +62,8 @@ doro-erp-e2e/
 | `CATALOG-004` | B | Category 생성 → 목록 확인 → `PATCH`+`If-Match` 수정 → 확인 → 비활성화 | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
 | `CATALOG-005` | B | 전용 Category 생성 → Product 생성 → 목록 확인 → 수정 → 확인 → 상품·Category 비활성화 | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
 | `CATALOG-006` | B | 품절 `true`→확인→`false`→확인(`CATALOG-005`의 Product 재사용, 완전 가역) | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
+| `AUDIT-001` | A | `GET /api/v1/audits?from=...&to=...`(최근 1시간) `200` — `from`/`to` 필수, OWNER/MANAGER만 허용 | `api/scenarios/audit-sales-connectivity.js` |
+| `SALES-001` | A | `GET /api/v1/sales/daily?businessDate=<오늘>` `200` — KST 자정 전후 5분은 `SKIP_PRECONDITION` | `api/scenarios/audit-sales-connectivity.js` |
 
 `QUEUE-003`은 취소된 Entry 행과 대기 순번 소비를 실 테넌트 데이터에 영구히 남기는 상태 변경 흐름이라
 `RUN_DESTRUCTIVE_QUEUE_TESTS=true`를 명시해야 실행된다 — `AUTH-030`~`034`가 쓰는
@@ -151,7 +159,7 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 
 개별 스위트를 하나씩 손으로 이어붙이지 않도록 `scripts/run-mandatory-gate.mjs`와 `scripts/run-full-gate.mjs` 두 오케스트레이션 스크립트를 추가했다.
 
-- **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `QUEUE-001`~`002`(k6 `api/scenarios/queue-connectivity.js`) → `CATALOG-001`~`003`(k6 `api/scenarios/catalog-connectivity.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구). `QUEUE-001`~`002`/`CATALOG-001`~`003` 단계는 `session-flow.js` 직후 `AUTH_VALID_01` 로그인을 1회씩 더 쓰므로 이 순서를 바꾸지 말 것(아래 "⚠️ 계정 Rate Limit Bucket 주의"·`api/README.md` 참고).
+- **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `QUEUE-001`~`002`(k6 `api/scenarios/queue-connectivity.js`) → `CATALOG-001`~`003`(k6 `api/scenarios/catalog-connectivity.js`) → `AUDIT-001`,`SALES-001`(k6 `api/scenarios/audit-sales-connectivity.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구). `QUEUE-001`~`002`/`CATALOG-001`~`003` 단계는 `session-flow.js` 직후 `AUTH_VALID_01` 로그인을 1회씩 더 쓰고, 그 뒤 `AUDIT-001`/`SALES-001` 단계는 별도 프로세스(별도 파일)라 로그인이 1회 더 필요해 그 앞에서 5분을 추가로 대기한다 — 이 순서를 바꾸지 말 것(아래 "⚠️ 계정 Rate Limit Bucket 주의"·`api/README.md` 참고).
 - **`node scripts/run-full-gate.mjs`** — 위 전체 + `QUEUE-003`(안내만 출력 — `RUN_DESTRUCTIVE_QUEUE_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `queue-connectivity.js` 단계 안에서 이미 실행됨) → `FE-BE-010`~`015`(Playwright `tests/fe-be-conditional.spec.ts`) → `AUTH-030`/`031`/`033`/`034`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다.
 - `OPS-001`/`OPS-003`은 `DORO_ENVIRONMENT`가 `local`로 시작할 때만 실제로 실행된다 — 그 외의(실 배포) 대상에서는 `RUN_FAULT_INJECTION_TESTS` 설정과 무관하게 자동으로 SKIP된다. `scripts/run-fault-injection.mjs`가 로컬 Docker 주소·컨테이너 이름에 하드코딩돼 있어 실 배포를 대상으로 실행할 수 없기 때문에, 잘못된(로컬) 대상을 검증하고도 실 배포를 검증한 것처럼 보이는 상황을 막기 위한 안전장치다.
 - 반대로 `OPS-002`/`OPS-005`는 `DORO_ENVIRONMENT`가 `local`로 시작하면 자동으로 SKIP된다 — 둘 다 `kubectl`로 실 EKS의 `store-access-api`를 직접 건드리는 실 배포 전용 스크립트라, 로컬 리허설 대상에서 실행할 이유가 없다(이 머신에 다른 실제 클러스터를 가리키는 `kubectl` 컨텍스트가 우연히 설정돼 있다면 로컬 리허설 도중 그 클러스터를 건드리는 일을 막기 위함).
@@ -176,7 +184,7 @@ node scripts/run-mandatory-gate.mjs
 
 ## 조건부/파괴적 항목을 구분한 이유
 
-이 구분은 `Docs/Specifications/운영·배포/배포 Frontend–Backend 종단 검증.md` 문서 자체의 구조를 그대로 따른다 — §3 필수 Browser Gate + §5 공통 계약의 배포 재검증(대표 Slice) + §6의 비파괴 항목(`OPS-004`) + §10의 Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`)만 "필수 게이트"(`run-mandatory-gate.mjs`)에 넣었다. 반대로 §4 조건부 Browser 시나리오, §5의 잠금/Rate Limit·Provider 오응답(`OPS-002`), §6의 Pod 장애 주입(`OPS-005`), §10의 Tier B(`QUEUE-003`,`CATALOG-004`~`006`)처럼 실제 서비스·계정·Pod·Service·테넌트 데이터에 실질적인 영향을 주는 항목은 "전체 게이트"(`run-full-gate.mjs`)로 분리해, 명시적 승인(플래그 또는 `--confirm`) 없이는 절대 자동으로 돌지 않도록 설계했다.
+이 구분은 `Docs/Specifications/운영·배포/배포 Frontend–Backend 종단 검증.md` 문서 자체의 구조를 그대로 따른다 — §3 필수 Browser Gate + §5 공통 계약의 배포 재검증(대표 Slice) + §6의 비파괴 항목(`OPS-004`) + §10의 Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`,`AUDIT-001`,`SALES-001`)만 "필수 게이트"(`run-mandatory-gate.mjs`)에 넣었다. 반대로 §4 조건부 Browser 시나리오, §5의 잠금/Rate Limit·Provider 오응답(`OPS-002`), §6의 Pod 장애 주입(`OPS-005`), §10의 Tier B(`QUEUE-003`,`CATALOG-004`~`006`)처럼 실제 서비스·계정·Pod·Service·테넌트 데이터에 실질적인 영향을 주는 항목은 "전체 게이트"(`run-full-gate.mjs`)로 분리해, 명시적 승인(플래그 또는 `--confirm`) 없이는 절대 자동으로 돌지 않도록 설계했다.
 
 ## 미구현 항목 설명
 
@@ -199,9 +207,10 @@ node scripts/run-mandatory-gate.mjs
 
 **참고**: `FE-BE-012`/`OPS-001`/`OPS-002`/`OPS-005`, 그리고 `AUTH-013`/`014`/`015`, `AUTH-030`/`031`,
 `FE-BE-010`/`014`, `SESS-004`/`005`는 위 A/B/C와 다르다 — "미구현"이 아니라 코드는 이미 완성돼 있고,
-전자 4개는 EKS 접근 권한이 없어서(위 "주의사항"의 EKS 접근 미검증 경고 참고), 후자 8개는 요청해둔
-정적 계정이 아직 실제로 만들어지지 않아서(`Docs/Specifications/운영·배포/
-"배포 검증용 테스트 계정 요청.md"` 참고) **실행 검증**만 못 한 상태다.
+전자 4개는 EKS 접근 권한이 없어서(위 "주의사항"의 EKS 접근 미검증 경고 참고), 후자 8개는
+**실행 검증**만 못 한 상태다(정적 계정 8개 자체는 실 DB에 이미 생성돼 있는 것으로 확인됨 —
+`Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"` 참고, 이 실행 검증 미완료는 계정
+미생성이 원인이 아니다).
 
 ### OPS-002 구현 메모
 

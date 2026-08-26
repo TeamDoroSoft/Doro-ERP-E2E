@@ -1,7 +1,7 @@
 # doro-erp-e2e / api
 
-k6 기반 배포 API Runner. `AUTH-*`, `SESS-*`, `QUEUE-*`, `CATALOG-*` 계약을 실제 배포 Origin에 직접
-호출해 검증한다. 브라우저 Network 관찰이 필요한 `FE-BE-*`는 여기서 다루지 않는다 —
+k6 기반 배포 API Runner. `AUTH-*`, `SESS-*`, `QUEUE-*`, `CATALOG-*`, `AUDIT-*`, `SALES-*` 계약을 실제
+배포 Origin에 직접 호출해 검증한다. 브라우저 Network 관찰이 필요한 `FE-BE-*`는 여기서 다루지 않는다 —
 `../browser`(Playwright) 참고.
 
 ## 실행
@@ -240,6 +240,53 @@ node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity
   실행 자체의 위험 때문에 의도적으로 제외했다(아래 "미구현 항목"의 A/B/C 분류와는 다른 사유 —
   배포 Frontend–Backend 종단 검증.md §10 참고).
 
+## `AUDIT-001`, `SALES-001`: `audit-api`·`commerce-api` sales 도메인 연결성 (Tier A)
+
+`api/scenarios/audit-sales-connectivity.js`. 둘 다 `AUTH_VALID_01` 하나만으로 실행되는 비파괴
+조회이며, 이 파일 안에서 로그인을 1회만 공유한다 — 왜 두 케이스를 별도 파일로 나누지 않고 여기
+합쳤는지는 아래 "⚠️ 계정 Rate Limit Bucket 주의"와 파일 상단 주석 참고.
+
+```bash
+DORO_API_ORIGIN=https://doro.minseok.click \
+DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
+  k6 run --log-format=raw api/scenarios/audit-sales-connectivity.js > /tmp/audit-sales-connectivity.log 2>&1
+node api/lib/build-report.mjs /tmp/audit-sales-connectivity.log audit-sales-connectivity AUDIT-001,SALES-001
+```
+
+- `AUDIT-001`(`GET /api/v1/audits`)은 `EdgeAuditController.java`(edge-api)가 `from`/`to`를 optional
+  String으로 그대로 audit-api에 전달하지만, 실제 필수 검증은 `AuditQueryService.validate()`
+  (audit-api)가 담당한다 — 없으면 `400`(`AuditQueryService.java` 확인 완료). `AuditQueryController.java`
+  의 `parseInstant()`가 `Instant.parse()`로 파싱하므로 ISO-8601 Instant 포맷(`Date.toISOString()`이
+  그대로 맞는 포맷)이어야 하고, 이 러너는 최근 1시간 범위로 조회한다.
+- `AUDIT-001`의 Role은 `AuditQueryService.authorizedActor()`가 `actorType=="EMPLOYEE" &&
+  (role=="OWNER" || role=="MANAGER")`만 통과시킨다 — `STAFF`는 `AUDIT_ROLE_NOT_ALLOWED`(`403`)로
+  거절된다(`AuditQueryExceptionAdvice.java`/`AuditQueryProblemCode.java` 확인 완료). `AUTH_VALID_01`
+  이 실제로 이 조건을 만족하는지는 로그인 응답 Body(`LoginResponse{employeeId,role,
+  passwordChangeRequired}` — `StoreAccessLoginForwarder.java`가 그대로 relay, 확인 완료)의 `role`
+  필드를 이 러너가 직접 읽어서 `observed.accountRole`에 남긴다 — status만으로 판정하면 역할
+  불일치로 인한 `403`과 다른 원인의 `403`을 구분할 수 없기 때문이다.
+- `AUDIT-001`의 성공 조건은 `AuditQueryPage{items,nextCursor}`가 그대로 직렬화되므로, 레코드가
+  없어도 `{items:[],nextCursor:null}`과 함께 `200`이다(`AuditQueryPage.java` 확인 완료).
+- `SALES-001`(`GET /api/v1/sales/daily?businessDate=<오늘>`)은 공개 `SalesController`가 아니라 HMAC
+  전용 `EdgeSalesManagementController.java`(commerce-api, `/internal/v1/edge/sales/daily`)로
+  라우팅된다 — Edge 쪽은 `CommerceManagementRouteController.java`의 GET 매핑이 세션 쿠키를 확인한
+  뒤 `CommerceManagementRouteForwarder`로 그 내부 경로에 전달한다(GET이라 CSRF 검사도 건너뜀 —
+  XSRF-TOKEN 대조는 `method!=GET`일 때만, 확인 완료).
+- `SALES-001`의 `<오늘>`(영업일) 계산은 `queue-connectivity.js`의 `STORE_UTC_OFFSET_MINUTES=9*60`
+  고정 오프셋 로직을 그대로 재사용한다(같은 코드를 복사 — `AUTH_VALID_01` 소속 매장이 `Asia/Seoul`
+  이라는 같은 전제).
+- `SALES-001`의 Role은 `SalesService.employee()`가 `actor.canReadSales()`만 확인하고,
+  `ActorContext.canReadSales()`는 `actorType==EMPLOYEE`만 보고 `OWNER`/`MANAGER`/`STAFF`를 구분하지
+  않는다(`ActorContext.java` 확인 완료) — `AUDIT-001`과 달리 Role 제한이 없다.
+- `SALES-001`은 "오픈 상태" 플래그가 아니라 `SalesService.requireCurrentBusinessDate()`가 매 요청마다
+  `store-access-api`의 `BusinessDateCalculator.currentBusinessDate()`(서버 현재 Instant를 매장
+  시간대로 변환한 `LocalDate`)와 비교해서 정확히 일치해야만 통과시킨다(`SalesService.java` 확인
+  완료) — 다르면 `409`(`CONFLICT`)다. Runner의 로컬 계산과 서버의 계산 시점이 KST 자정을 사이에 두고
+  갈라지면 실제 결함이 아닌 `409`가 날 수 있어, KST 자정 전후 5분 이내에 실행되면 이 케이스는
+  실패로 기록하지 않고 `SKIP_PRECONDITION`(사유: "자정 경계 근처 실행 회피")으로 건너뛴다.
+- `SALES-001`의 성공 조건은 마감(Daily Closing) 레코드가 없어도 실시간 집계로 `200`이다
+  (`SalesService.daily()` 확인 완료 — closing 레코드 존재를 요구하지 않음).
+
 ## `OPS-001`/`OPS-003`: 장애 주입 (기본 비활성, 로컬 전용)
 
 `scripts/run-fault-injection.mjs`는 k6가 아니라 별도 Node 스크립트다 — Docker 컨테이너를 직접
@@ -271,6 +318,7 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 | `session-flow.js` | 3회 (`SESS-001`/`002`/`003`/`006` 공용 최초 로그인 1회 + `SESS-007` 내부의 사전 로그인·재로그인 2회) — `SESS-004`/`005`는 별도 정적 계정(`AUTH_TEMP_PASSWORD_01`/`AUTH_PASSWORD_ROTATE_01`)을 써서 이 Bucket을 건드리지 않는다 |
 | `queue-connectivity.js` | 1회 (`QUEUE-001`/`002` 공용 로그인) — `QUEUE-003`도 같은 로그인을 재사용해 추가 호출 없음 |
 | `catalog-connectivity.js` | 1회 (`CATALOG-001`~`003` 공용 로그인) — `CATALOG-004`~`006`은 `AUTH_VALID_01`이 아니라 `AUTH_ROLE_OWNER_01`로 별도 로그인해 이 Bucket을 전혀 건드리지 않는다(아래 참고) |
+| `audit-sales-connectivity.js` | 1회 (`AUDIT-001`/`SALES-001` 공용 로그인) — 별도 프로세스라 Cookie Jar를 이어받지 못해 새 로그인이 필요하다(파일 상단 주석 참고) |
 | **`../browser` (Playwright) FE-BE-002~006** | 성공 로그인 여러 회 + 실패 로그인 1회 |
 
 **`AUTH_ROLE_OWNER_01`은 `AUTH_VALID_01`과 별개의 계정 단위 Rate Limit Bucket을 쓴다** — 서버측
@@ -284,13 +332,16 @@ Bucket이 `(tenantCode, loginId)` 단위로 격리돼 있어(`AUTH-030`~`034`가
 저장소 루트의 `scripts/run-mandatory-gate.mjs`(오케스트레이터)가 단계 사이에 Bucket이 완전히
 다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다 — `session-flow.js`(3회) 직후에는
 `queue-connectivity.js`(1회) → `catalog-connectivity.js`(1회)를 추가 대기 없이 바로 이어붙이는데,
-그 앞의 5분 대기로 Bucket이 5로 꽉 찬 상태에서 3+1+1=5로 정확히 맞춰뒀기 때문이다(그 사이·뒤에
-`AUTH_VALID_01` 로그인을 더 쓰는 단계를 끼워 넣으면 이 계산이 깨진다). 아래 예시처럼 손으로 직접
-이어붙여 실행할 때만 다음 중 하나로 직접 대응해야 한다.
+그 앞의 5분 대기로 Bucket이 5로 꽉 찬 상태에서 3+1+1=5로 정확히 맞춰뒀기 때문이다(그 사이에
+`AUTH_VALID_01` 로그인을 더 쓰는 단계를 끼워 넣으면 이 계산이 깨진다). `catalog-connectivity.js`
+뒤에는 `audit-sales-connectivity.js`(1회)를 이어붙이는데, 이 시점엔 이미 Bucket을 5까지 다 썼으므로
+그 사이에 다시 5분을 대기해 Bucket을 5로 채운 뒤 1만 쓰는 것으로 예산 계산이 리셋된다(그 뒤에 또
+`AUTH_VALID_01` 로그인 단계를 추가하려면 이 표와 `run-mandatory-gate.mjs`의 주석을 함께 갱신할 것).
+아래 예시처럼 손으로 직접 이어붙여 실행할 때만 다음 중 하나로 직접 대응해야 한다.
 
-- `auth-mandatory.js` → `session-flow.js` → `queue-connectivity.js` → `catalog-connectivity.js` → `browser`
-  순서로 실행하되 각 사이 최소 5분 이상 간격을 둔다(단, `session-flow.js` → `queue-connectivity.js` →
-  `catalog-connectivity.js` 구간은 위 설명대로 대기 없이 이어붙여도 정확히 용량 안에서 끝난다).
+- `auth-mandatory.js` → `session-flow.js` → `queue-connectivity.js` → `catalog-connectivity.js` →
+  (5분 대기) → `audit-sales-connectivity.js` → `browser` 순서로 실행하되, 괄호로 표시한 구간만
+  최소 5분 이상 간격을 두고 나머지는 위 설명대로 대기 없이 이어붙여도 정확히 용량 안에서 끝난다.
 - 반복 실행이 잦다면 dev 환경에서 `sample-store`/`owner` 전용으로 Rate Limit 용량을 늘리는 걸
   인프라팀에 요청한다(운영 계정에는 적용하지 않는다).
 - Client IP Bucket(기본 용량 30, 분당 6 보충)은 이 정도 호출량으로는 넉넉하므로 별도 조치 불필요.
@@ -336,3 +387,8 @@ browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 �
 - `OPS-002`/`004`/`005`는 "미구현"이 아니다 — 코드는 이미 완성돼 있고(`scripts/verify-provider-malformed-response.mjs`/`verify-edge-boundary.mjs`/`verify-partial-pod-failure.mjs`),
   `OPS-004`만 2026-08-25에 실 AWS 배포로 PASS까지 확인했다. `OPS-002`/`005`는 이 작업 환경에 EKS
   접근 권한이 없어 **실행 검증**만 못 한 상태다(README.md "주의사항"의 EKS 접근 미검증 경고 참고).
+- `SALES-001`은 KST 자정 전후 5분 이내에 실행되면 `SKIP_PRECONDITION`이 된다(위 "`AUDIT-001`,
+  `SALES-001`" 절 참고). `run-mandatory-gate.mjs`는 이 타이밍 의존성 때문에 `SALES-001`을
+  `mandatoryApiCasesPassed` 계산에서 뺐다(`AUTH-015`를 뺀 것과 같은 이유) — 이 케이스 자체는 그대로
+  실행·기록되지만, 이 좁은 시간대에 게이트를 돌렸다는 이유만으로 종합 판정이 실패하지는 않는다.
+  `AUDIT-001`은 이런 타이밍 의존성이 없어 그대로 필수 판정에 포함된다.
