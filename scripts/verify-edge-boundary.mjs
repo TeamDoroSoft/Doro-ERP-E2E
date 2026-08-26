@@ -67,6 +67,49 @@ async function checkPublicEdge(origin) {
 // 2) 내부 Ingress 직접 접근 — 정상적인 경우 이 fetch는 "응답을 받아서" 실패하는 게 아니라
 // "연결 자체가 안 돼서" 실패해야 한다(사설 IP라 라우팅이 안 됨). 그래서 여기서 예외가 나는 게
 // PASS, 정상 응답이 오는 게 FAIL이다 — 다른 check들과 성패 방향이 반대라는 점에 주의.
+//
+// 다만 "예외가 났다"는 사실 하나로는 부족하다 — 예외 안에는 전혀 다른 두 상황이 섞여 있다.
+//   (a) 진짜 네트워크 계층 실패(ECONNREFUSED/ETIMEDOUT/ENOTFOUND 등): 사설 IP라 VPC 밖에서는
+//       아예 연결 자체가 안 된다는 뜻 — 이게 우리가 기대하는 정상적인 차단이다.
+//   (b) TLS/인증서 검증 실패(CERT_HAS_EXPIRED, DEPTH_ZERO_SELF_SIGNED_CERT 등): TCP 연결과
+//       TLS 핸드셰이크까지는 실제로 도달했고, 그 이후 인증서 검증 단계에서만 실패했다는 뜻이다.
+//       즉 네트워크 경로 자체는 외부에서 열려 있다는 증거이며, 인증서 문제와 무관하게 "내부
+//       Ingress가 외부에 노출돼 있다"는 보안 이슈를 (a)와 똑같이 취급하면 놓치게 된다.
+// Node의 fetch(undici)는 실제 시스템 에러를 `TypeError: fetch failed`의 `.cause`에 담아
+// 올린다(cause가 Node SystemError이고 `.code`를 가짐). AbortController 타임아웃 경로는
+// `.cause` 없이 바로 올 수도 있어 `error.code`도 함께 확인한다.
+const TLS_CERT_ERROR_CODES = new Set([
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_GET_CRL',
+  'CERT_UNTRUSTED',
+  'CERT_REVOKED',
+  'CERT_CHAIN_TOO_LONG',
+  'CERT_SIGNATURE_FAILURE',
+  'HOSTNAME_MISMATCH',
+])
+
+function isTlsCertErrorCode(code) {
+  if (!code) return false
+  // ERR_TLS_* (예: ERR_TLS_CERT_ALTNAME_INVALID)는 Node 자체의 TLS 에러 코드 네임스페이스라
+  // 전부 인증서/핸드셰이크 관련으로 간주한다. 나머지는 흔한 OpenSSL 코드 목록으로 매칭한다.
+  return code.startsWith('ERR_TLS_') || TLS_CERT_ERROR_CODES.has(code)
+}
+
+// fetch 실패의 원인을 TLS(도달함, 인증서만 실패) vs 네트워크(도달 자체가 안 됨)로 분류한다.
+// 목록에 없는 낯선 코드는 안전 기본값에 따라 네트워크 실패로 취급한다 — "차단됨"으로 오판할
+// 위험보다 실제 노출을 놓치는 위험이 더 크므로, TLS 목록에 명확히 해당하는 경우만 예외로 둔다.
+function classifyFetchError(error) {
+  const cause = error && typeof error === 'object' && 'cause' in error ? error.cause : undefined
+  const code = cause?.code ?? error?.code ?? null
+  return isTlsCertErrorCode(code) ? { kind: 'tls', code } : { kind: 'network', code }
+}
+
 function resolveInternalAlbDns(albName) {
   const raw = execFileSync(
     'aws',
@@ -85,9 +128,16 @@ async function checkInternalIngressBlocked(albDns) {
     // 응답이 왔다 — 내부 Ingress가 외부에서 직접 접근 가능하다는 뜻이라 실패다.
     return { blocked: false, status: res.status }
   } catch (error) {
-    // Timeout·연결 거부·DNS 실패 전부 "차단됨"으로 인정한다 — 사설 IP라 어떤 형태로 막히든
-    // 외부에서 접근 못 하는 게 핵심이지, 에러의 정확한 종류는 중요하지 않다.
-    return { blocked: true, reason: error instanceof Error ? error.message : String(error) }
+    const message = error instanceof Error ? error.message : String(error)
+    const { kind, code } = classifyFetchError(error)
+    if (kind === 'tls') {
+      // TCP 연결과 TLS 핸드셰이크까지는 실제로 도달했고 인증서 검증만 실패했다 — 이는 네트워크
+      // 경로가 열려 있다는 증거이므로, 진짜 차단(연결 자체 불가)과 달리 명시적으로 FAIL 처리한다.
+      return { blocked: false, reason: 'TLS_HANDSHAKE_REACHED', tlsError: code ?? message }
+    }
+    // Timeout·연결 거부·DNS 실패 등 진짜 네트워크 계층 실패(및 목록에 없는 낯선 코드)는 전부
+    // "차단됨"으로 인정한다 — 사설 IP라 어떤 형태로 막히든 외부에서 접근 못 하는 게 핵심이다.
+    return { blocked: true, reason: message }
   }
 }
 
@@ -114,7 +164,9 @@ async function main() {
     console.log(
       internalResult.blocked
         ? `  차단 확인됨: ${internalResult.reason}`
-        : `  ⚠ 응답이 왔습니다(status=${internalResult.status}) — 내부 Ingress가 외부에 노출된 것으로 보입니다.`,
+        : internalResult.reason === 'TLS_HANDSHAKE_REACHED'
+          ? `  ⚠ 내부 ALB에 TLS 핸드셰이크까지 도달했습니다(인증서 오류로 실패) — 네트워크 경로가 열려 있을 수 있습니다. 직접 확인이 필요합니다: ${internalResult.tlsError}`
+          : `  ⚠ 응답이 왔습니다(status=${internalResult.status}) — 내부 Ingress가 외부에 노출된 것으로 보입니다.`,
     )
   } catch (error) {
     console.log(`  ALB 조회 실패: ${error instanceof Error ? error.message : error}`)

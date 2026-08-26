@@ -166,4 +166,16 @@ console.log(`  sensitiveDataLeakCount = ${sensitiveDataLeakCount}`)
 console.log(`  requestCorrelationVerified = ${requestCorrelationVerified}`)
 console.log(`  passConnected = ${passConnected}`)
 console.log(`  frontBackConnected (좁은 판정) = ${frontBackConnected}`)
-process.exit(frontBackConnected ? 0 : 1)
+if (passConnected !== frontBackConnected) {
+  console.log(
+    `⚠ passConnected(${passConnected})와 frontBackConnected(${frontBackConnected})가 다릅니다 — 어느 §7 세부 조건이 걸렸는지 아래 값을 확인하세요.`,
+  )
+  console.log(`  deploymentIdentityComplete     = ${deploymentIdentityComplete}`)
+  console.log(`  mandatoryBrowserPassed         = ${mandatoryBrowserPassed}`)
+  console.log(`  mandatoryApiPassed             = ${mandatoryApiPassed}`)
+  console.log(`  protectedApiReachedFromBrowser = ${protectedApiReachedFromBrowser}`)
+  console.log(`  requestCorrelationVerified     = ${requestCorrelationVerified}`)
+  console.log(`  browserErrorsAbsent            = ${browserErrorsAbsent}`)
+  console.log(`  sensitiveDataLeakCount         = ${sensitiveDataLeakCount}`)
+}
+process.exit(passConnected ? 0 : 1)

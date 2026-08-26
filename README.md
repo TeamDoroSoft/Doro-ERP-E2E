@@ -56,6 +56,7 @@ doro-erp-e2e/
 - **`scripts/verify-edge-boundary.mjs`(`OPS-004`)**는 인프라를 바꾸지 않는 비파괴·읽기 전용 검사로,
   유효한 TLS와 CloudFront→ALB→Edge API 공개 경로 및 내부 Ingress 직접 접근 차단을 확인한다.
   2026-08-25 `team2` Profile로 실제 AWS 배포에 실행해 `PASS`를 확인했다(아래 "Deployment Identity(Revision) 채우기" 참고).
+  이후 TLS/네트워크 오류를 구분하는 분기가 추가됐는데 이 부분은 아직 실 클러스터로 검증 못했다(아래 "주의사항" 참고).
 - **`scripts/verify-provider-malformed-response.mjs`(`OPS-002`)**는 `kubectl`로 실 `store-access-api`
   Service의 `spec.selector`를 의도적으로 잘못된 로그인 응답을 내는 임시 디코이 Pod로 바꿔 Edge API가
   `503` Fail-Closed하는지 확인한 뒤 원복한다. `--confirm`이 필요하며, 실 실행은 아직 미검증이다
@@ -114,6 +115,8 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 - **`OPS-005`는 파괴적이다**: 실제로 `store-access-api` Pod 1개를 `kubectl delete pod`로 지운다 — 승인된 점검 시간에만, `--confirm` 필요.
 - **`OPS-002`는 영향 범위가 넓다**: 실 `store-access-api` Service의 `spec.selector`를 디코이 Pod로 임시 교체한다(재시작이 필요 없고 즉시 반영·즉시 원복되는 방식을 택했다). 다만 `STORE_ACCESS_INTERNAL_BASE_URL` 하나를 edge-api의 로그인·Session Context·Kiosk·Management·비밀번호 변경 Forwarder 6개가 전부 공유하기 때문에, 교체돼 있는 동안에는 store-access-api를 쓰는 edge-api의 모든 통신이 함께 영향을 받는다(`OPS-005`보다 넓은 범위) — 승인된 점검 시간에만, `--confirm` 필요.
 - **정적 계정 8개 준비 필요, 없으면 SKIP만 하고 대체 경로 없음**: `AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-010`/`014`, `SESS-004`/`005`는 전용 정적 계정이 없으면 `SKIP_PRECONDITION`으로만 끝난다 — Provisioning API 폴백을 완전히 제거했기 때문에(실 테넌트 DB에 추적 안 되는 데이터가 생기는 걸 막기 위함) 로컬 리허설로도 우회할 수 없다. 계정 요구사항은 `Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"` 참고.
+- **`OPS-005`의 `observedSinglePodWindow`는 보조 지표다**: PASS해도 이 값이 `false`면 대체 Pod가 너무 빨리 Ready가 돼서 "정말로 Pod 1개만 서비스하던 순간"을 직접 관측하지 못했다는 뜻이다(서비스가 계속 정상 응답했다는 핵심 판정 자체는 여전히 유효하다) — 결과를 엄격하게 확인해야 하면 JSONL의 이 필드를 같이 봐야 한다.
+- **`OPS-004`의 TLS/네트워크 오류 구분 로직은 아직 실 클러스터로 검증 못함**: 내부 ALB가 실수로 인터넷에 노출된 경우(TLS 인증서 오류로 응답이 옴)와 정상적으로 차단된 경우(연결 자체가 실패)를 구분하도록 새로 추가했다 — 기존에 "2026-08-25 실 AWS 배포 PASS 확인"한 건 이 분기가 생기기 전 코드 기준이라, 이 분기 자체는 실제 TLS 오류 케이스로는 아직 검증되지 않았다.
 
 ## 오케스트레이션 스크립트 사용법
 
@@ -123,7 +126,8 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 - **`node scripts/run-full-gate.mjs`** — 위 전체 + `FE-BE-010`~`015`(Playwright `tests/fe-be-conditional.spec.ts`) → `AUTH-030`/`031`/`033`/`034`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다.
 - `OPS-001`/`OPS-003`은 `DORO_ENVIRONMENT`가 `local`로 시작할 때만 실제로 실행된다 — 그 외의(실 배포) 대상에서는 `RUN_FAULT_INJECTION_TESTS` 설정과 무관하게 자동으로 SKIP된다. `scripts/run-fault-injection.mjs`가 로컬 Docker 주소·컨테이너 이름에 하드코딩돼 있어 실 배포를 대상으로 실행할 수 없기 때문에, 잘못된(로컬) 대상을 검증하고도 실 배포를 검증한 것처럼 보이는 상황을 막기 위한 안전장치다.
 - 반대로 `OPS-002`/`OPS-005`는 `DORO_ENVIRONMENT`가 `local`로 시작하면 자동으로 SKIP된다 — 둘 다 `kubectl`로 실 EKS의 `store-access-api`를 직접 건드리는 실 배포 전용 스크립트라, 로컬 리허설 대상에서 실행할 이유가 없다(이 머신에 다른 실제 클러스터를 가리키는 `kubectl` 컨텍스트가 우연히 설정돼 있다면 로컬 리허설 도중 그 클러스터를 건드리는 일을 막기 위함).
-- 두 스크립트 다 `DORO_RUN_ID`를 자동 생성하거나 이미 export돼 있으면 그대로 쓰고, 한 단계가 실패해도 나머지 단계는 계속 진행한 뒤 마지막에 종합 결과를 보여주고 실패가 하나라도 있으면 exit code 1로 끝난다.
+- `RUN_DESTRUCTIVE_AUTH_TESTS=true`로 `run-full-gate.mjs`를 돌리면 `AUTH-030`~`034` 단계 직전에 **약 65초를 그대로 대기한다** — 바로 앞에서 `AUTH-015`가 `AUTH_LOCKOUT_01`의 Rate Limit Bucket을 소진시켜 놓고 가기 때문에, 대기 없이 곧바로 `AUTH-030`을 돌리면 5회 연속 `401`이어야 할 응답 중 일부가 `429`로 나와 실제 결함이 아닌 순서 문제로 FAIL이 날 수 있다.
+- 두 스크립트 다 `DORO_RUN_ID`를 자동 생성하거나 이미 export돼 있으면 그대로 쓰고, 한 단계가 실패해도 나머지 단계는 계속 진행한 뒤 마지막에 종합 결과를 보여주고 실패가 하나라도 있으면 exit code 1로 끝난다. **`build-combined-summary.mjs` 단계의 exit code는 완화 판정(`frontBackConnected`)이 아니라 문서 §7 그대로의 엄격 판정(`passConnected`) 기준이다** — 둘이 갈리면 어느 §7 세부 조건이 걸렸는지 콘솔에 같이 출력된다.
 - **파괴적 플래그는 오케스트레이터가 절대 자동으로 켜지 않는다** — `RUN_DESTRUCTIVE_AUTH_TESTS=true`(`AUTH-030`/`031`/`033`/`034`용), `RUN_FAULT_INJECTION_TESTS=true`(`FE-BE-012` 및 `OPS-001`/`002`/`003`/`005`의 `--confirm` 대신 재사용됨)를 실행 전 직접 export해야만 해당 케이스가 실제로 돈다. 안 켜져 있으면 무엇을 export해야 하는지 안내 문구를 찍고 그 단계만 SKIP한다.
 
 ```bash

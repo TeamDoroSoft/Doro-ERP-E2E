@@ -26,6 +26,16 @@
 // pods/delete, pods/list, endpointslices/list 권한이 있는 kubectl context가 필요하다. 이
 // 스크립트를 작성한 환경에서는 그런 접근이 없어서(EKS Access Entry 미등록 — 별도 확인·승인
 // 필요) 실제로 실행해 검증하지 못했다 — 최초 실행 전 결과를 반드시 직접 확인할 것.
+//
+// 관측 한계: ReplicaSet 컨트롤러는 Pod delete 즉시 대체 Pod를 스케줄하는데, 그 대체 Pod가
+// startupProbe+readinessProbe를 빠르게 통과해 "장애 중" 로그인 프로브 구간(2단계) 안에서
+// Ready가 되면, 그 구간에 실제로는 Pod가 다시 2개(생존 Pod + 이미 Ready된 대체 Pod) 상태였을
+// 수 있다 — 즉 "Pod 1개만으로 정상 응답"을 진짜로 관측했다는 보장이 되지 않는다. 이를 보완하려고
+// 2단계의 같은 루프 안에서 매초 getReadyPods().length도 함께 기록해(duringFaultReadyCounts)
+// originalReadyCount - 1 값이 실제로 한 번이라도 관측됐는지(observedSinglePodWindow)를 별도로
+// 남긴다. 다만 이것도 완전히 결정적이진 않다 — 대체 Pod가 첫 poll 이전에 이미 Ready가 됐다면
+// 이 방법으로도 "단독 Pod 구간"을 잡아내지 못한다. observedSinglePodWindow는 진단용 참고
+// 정보일 뿐 PASS/FAIL 판정에는 영향을 주지 않는다.
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -223,6 +233,7 @@ async function main() {
   // 실제로 복구됐는지 아무도 확인하지 않은 채 스크립트가 끝나버리기 때문이다.
   let excluded = false
   const duringFaultStatuses = []
+  const duringFaultReadyCounts = []
   let remainingTargetServedNormally = false
   let sessionResult = { ok: false, step: 'not-run' }
   let postDeleteError = null
@@ -235,6 +246,7 @@ async function main() {
     const probeDeadline = Date.now() + 15_000
     while (Date.now() < probeDeadline) {
       duringFaultStatuses.push((await loginProbe()).status)
+      duringFaultReadyCounts.push(getReadyPods().length)
       await new Promise((r) => setTimeout(r, 1000))
     }
     remainingTargetServedNormally = duringFaultStatuses.length > 0 && duringFaultStatuses.every((s) => s === 401)
@@ -247,6 +259,19 @@ async function main() {
       `Pod delete 이후 확인 단계에서 오류가 발생했습니다 — 그래도 복구 대기는 반드시 진행합니다: ${postDeleteError}`,
     )
   }
+
+  // 참고용 관측치일 뿐 pass/fail에는 영향을 주지 않는다 — 대체 Pod가 probe 도중(또는 그 전에)
+  // 이미 Ready가 됐다면 duringFaultReadyCounts는 originalReadyCount - 1 아래로 안 내려갈 수
+  // 있고, 그래도 "나머지 Pod가 정상 응답했다"는 핵심 주장 자체는 여전히 유효하다.
+  const observedSinglePodWindow = duringFaultReadyCounts.includes(originalReadyCount - 1)
+  console.log(
+    `단독 Pod 구간 관측: ${
+      observedSinglePodWindow
+        ? '예 — 실제로 1개짜리 구간을 확인함'
+        : '아니오 — 대체 Pod가 probe 시작 전 또는 probe 도중 너무 빨리 Ready가 됐을 수 있음 ' +
+          '(테스트 자체는 여전히 정상 응답을 확인했으므로 PASS는 유효하지만, 이 특정 증거는 없음)'
+    }`,
+  )
 
   console.log(`대체 Pod가 기동해 Ready Pod 수가 ${originalReadyCount}으로 복구될 때까지 대기(최대 3분)...`)
   const recovered = await waitUntil(() => getReadyPods().length >= originalReadyCount, 180_000, 3000)
@@ -269,6 +294,8 @@ async function main() {
     targetIp,
     excluded,
     duringFaultStatuses,
+    duringFaultReadyCounts,
+    observedSinglePodWindow,
     remainingTargetServedNormally,
     sessionResult,
     recovered,
@@ -284,6 +311,8 @@ function writeResult({
   targetIp,
   excluded,
   duringFaultStatuses,
+  duringFaultReadyCounts,
+  observedSinglePodWindow,
   remainingTargetServedNormally,
   sessionResult,
   recovered,
@@ -322,6 +351,9 @@ function writeResult({
       targetIp,
       excluded,
       duringFaultStatuses,
+      duringFaultReadyCounts,
+      minDuringFaultReadyCount: duringFaultReadyCounts.length > 0 ? Math.min(...duringFaultReadyCounts) : null,
+      observedSinglePodWindow,
       sessionStep: sessionResult.step,
       sessionStatus: sessionResult.status ?? null,
       recovered,
@@ -332,6 +364,9 @@ function writeResult({
       remainingTargetServedNormally,
       sessionRoundTripOk: sessionResult.ok === true,
       recoveredToOriginalReadyCount: recovered,
+      // 참고용 진단 항목 — pass/fail(resultCode) 산정에는 포함되지 않는다. true가 아니어도
+      // 위 핵심 assertion들이 모두 true면 여전히 PASS다(대체 Pod가 너무 빨리 Ready가 됐을 뿐).
+      observedSinglePodWindow,
     },
     artifacts: { failureScreenshot: null },
     errorClass: pass ? null : postDeleteError ? `POST_DELETE_ERROR: ${postDeleteError}` : 'ASSERTION_MISMATCH',

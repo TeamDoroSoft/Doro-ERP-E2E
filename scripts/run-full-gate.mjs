@@ -13,6 +13,19 @@
 // 판단해야 하는데, 새 플래그를 따로 만들지 않고 FE-BE-012와 같은 위험 범주(실제로 무언가를
 // 멈추거나 지우거나 바꾼다)이므로 RUN_FAULT_INJECTION_TESTS 하나를 그대로 재사용한다 — 켜져
 // 있을 때만 `--confirm`을 붙여서 호출하고, 아니면 아예 호출하지 않고 SKIP으로 기록한다.
+//
+// AUTH-015 → AUTH-030 순서 의존성: runMandatoryGate()가 먼저 실행하는
+// api/scenarios/auth-scenarios(-account-nonexposure).js의 AUTH-015는 RUN_DESTRUCTIVE_AUTH_TESTS=true일 때
+// AUTH_LOCKOUT_01 계정에 틀린 비밀번호 5회 + 맞는 비밀번호 1회(총 6회)를 보내 로그인 Rate Limit
+// Bucket(용량 5, 분당 1 리필)을 완전히 소진시킨다. 바로 뒤이어 실행되는 이 파일의
+// AUTH-030,031,033,034 단계는 api/scenarios/auth-lockout-ratelimit.js를 호출하는데, 그중
+// AUTH-030은 같은 AUTH_LOCKOUT_01 계정에 틀린 비밀번호 5회를 보내고 다섯 응답 전부가 정확히
+// 401이어야 한다고 단언한다(AUTH-031/033/034는 401 또는 429를 모두 허용해 영향받지 않음).
+// AUTH-015 직후라 Bucket이 아직 비어 있으면 AUTH-030의 초반 요청이 401 대신 429를 받아
+// 실제 제품 결함이 아닌 순전한 실행 순서 때문에 FAIL_ASSERTION이 발생한다. 이를 막기 위해
+// AUTH-030,031,033,034 단계 직전에 RUN_DESTRUCTIVE_AUTH_TESTS=true일 때만(그 값이 아니면
+// AUTH-015도 파괴적으로 실행되지 않았고 이 단계도 자체 SKIP되므로 대기가 무의미하다) Bucket이
+// 다시 채워질 만큼(약 65초, 과거 실행 관찰 기준) 그대로 대기한다.
 import { pathToFileURL } from 'node:url'
 import { runMandatoryGate } from './run-mandatory-gate.mjs'
 import { runStep, guardFlag, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
@@ -30,6 +43,14 @@ export async function runFullGate() {
       return runPlaywrightSpec('tests/fe-be-conditional.spec.ts')
     }),
   )
+
+  if (process.env.RUN_DESTRUCTIVE_AUTH_TESTS === 'true') {
+    console.log(
+      '  ⏳ AUTH-015(방금 실행됨)가 AUTH_LOCKOUT_01의 Rate Limit Bucket을 소진시켰을 수 있습니다 — ' +
+        'AUTH-030의 5회 연속 401 판정이 429로 오염되지 않도록 65초 대기합니다.',
+    )
+    await new Promise((r) => setTimeout(r, 65_000))
+  }
 
   steps.push(
     await runStep('AUTH-030,031,033,034 (k6 잠금·Rate Limit)', () => {
