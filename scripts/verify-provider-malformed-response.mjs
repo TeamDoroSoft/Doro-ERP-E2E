@@ -229,9 +229,15 @@ async function main() {
       patchServiceSelector(originalSelector)
     } catch (error) {
       restoredOk = false
-      console.error(`⚠ Service selector 복원 실패 — 수동으로 확인하세요: ${error instanceof Error ? error.message : error}`)
+      console.error(
+        `⚠ Service selector 복원 실패 — ${K8S_NAMESPACE}/${K8S_SERVICE} selector와 아직 실행 중인 ` +
+          `디코이 Pod(${DECOY_POD_NAME}, label app.kubernetes.io/name=${DECOY_LABEL_VALUE})를 모두 수동으로 복구·정리하세요: ` +
+          (error instanceof Error ? error.message : String(error)),
+      )
     }
-    deleteDecoyPod()
+    if (restoredOk) {
+      deleteDecoyPod()
+    }
   }
 
   console.log('복원 후 로그인 요청이 다시 401(정상 처리)로 돌아오는지 확인(최대 30초)...')
