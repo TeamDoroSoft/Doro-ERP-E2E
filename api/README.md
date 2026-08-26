@@ -5,8 +5,10 @@ k6 기반 배포 API Runner. `AUTH-*`, `SESS-*` 계약을 실제 배포 Origin�
 
 ## 실행
 
-저장소 루트(`doro-erp-e2e/`)에서 실행해야 `reports/`에 결과가 쌓인다. `--log-format=raw`로 실행해
-stdout을 파일로 받은 뒤 `api/lib/build-report.mjs`로 후처리해야 한다 — 이유는 "결과물" 절 참고.
+저장소 루트(`doro-erp-e2e/`)에서 실행해야 `reports/`에 결과가 쌓인다. `--log-format=raw`로 실행하고
+**stdout과 stderr를 함께(`2>&1`)** 파일로 받은 뒤 `api/lib/build-report.mjs`로 후처리해야 한다 —
+`console.log()` 줄이 실제로는 stdout이 아니라 stderr로 나오기 때문이다(k6 v2.2.0 실측 확인). 이유는
+"결과물" 절 참고.
 
 ```bash
 export DORO_API_ORIGIN=https://doro.minseok.click
@@ -98,6 +100,7 @@ Docker 네트워크)에서는 이 문제가 없어 안전하게 실행해도 된
 
 ```bash
 DORO_API_ORIGIN=https://doro.minseok.click \
+DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
 DORO_AUTH_INACTIVE_EMPLOYEE_01_TENANT_CODE=... DORO_AUTH_INACTIVE_EMPLOYEE_01_LOGIN_ID=... DORO_AUTH_INACTIVE_EMPLOYEE_01_PASSWORD=... \
 DORO_AUTH_INACTIVE_TENANT_01_TENANT_CODE=... DORO_AUTH_INACTIVE_TENANT_01_LOGIN_ID=... DORO_AUTH_INACTIVE_TENANT_01_PASSWORD=... \
 DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
@@ -182,9 +185,13 @@ k6의 `handleSummary()`는 **VU가 테스트를 실행하는 것과 완전히 �
 — 그래서 `record()`가 모듈 스코프에 쌓은 결과를 `handleSummary()` 쪽에서는 항상 빈 배열로 본다
 (로컬 리허설에서 `totalCases: 0`으로 실제 재현·확인, `lib/resultLogger.js` 주석 참고). 이 경계를 우회할
 core k6 API가 없어서, `record()`는 케이스마다 `console.log(JSON.stringify(entry))`로 즉시 한 줄씩
-stdout에 내보내고, `k6 run --log-format=raw`로 그 줄들이 k6 자체 로그 접두어 없이 그대로 찍히게 한 뒤,
-`api/lib/build-report.mjs`(평범한 Node 스크립트)가 그 stdout을 후처리해서
-`reports/<runId>.<suite>.{results.jsonl,summary.json,junit.xml}`을 만든다.
+내보내고, `k6 run --log-format=raw`로 그 줄들이 k6 자체 로그 접두어 없이 그대로 찍히게 한다.
+**이 줄은 stdout이 아니라 stderr로 나온다**(k6 v2.2.0 실측 확인) — 위 "실행" 절의 수동 명령이
+`2>&1`로 두 스트림을 합쳐서 파일로 받는 이유가 이것이다. 저장소 루트의 오케스트레이터
+(`scripts/run-mandatory-gate.mjs` 등)는 이 스트림 문제를 피하려고 `--console-output=<파일>`로
+k6가 그 줄들을 직접 파일에 쓰게 한다. 어느 경로든 `api/lib/build-report.mjs`(평범한 Node
+스크립트)가 그 파일을 후처리해서 `reports/<runId>.<suite>.{results.jsonl,summary.json,junit.xml}`을
+만든다.
 
 같은 이유로 파일명은 `reports/<runId>/results.jsonl`처럼 하위 디렉터리를 쓰지 않고
 `reports/<runId>.<suite>.results.jsonl`처럼 `reports/` 바로 아래 평평하다 — k6 코어 JS에는 mkdir

@@ -292,8 +292,10 @@ node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
 `--log-format=raw`와 `build-report.mjs` 두 단계 다 필수다 — k6의 `handleSummary()`는 VU 실행과
 별도의 격리된 JS VM에서 돌아서 실행 중 쌓은 결과를 볼 수 없다(로컬 리허설에서 실제로
 `totalCases: 0`으로 재현·확인). 그래서 `api/lib/resultLogger.js`의 `record()`가 케이스마다
-`console.log`로 한 줄씩 stdout에 내보내고, `build-report.mjs`가 그 로그를 후처리해서
-`reports/<runId>.<suite>.{results.jsonl,summary.json,junit.xml}`을 만든다 — `api/README.md` 참고.
+`console.log`로 한 줄씩 내보내는데, 이 줄은 stdout이 아니라 **stderr**로 나온다(k6 v2.2.0 실측
+확인) — 위 명령들이 `2>&1`로 두 스트림을 합쳐서 파일로 받는 이유가 이것이다. `build-report.mjs`가
+그 로그를 후처리해서 `reports/<runId>.<suite>.{results.jsonl,summary.json,junit.xml}`을 만든다 —
+`api/README.md` 참고.
 
 ## 로컬 Docker Prod-like 리허설 모드
 
