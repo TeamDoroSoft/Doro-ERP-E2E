@@ -388,7 +388,7 @@ browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 �
   `OPS-004`만 2026-08-25에 실 AWS 배포로 PASS까지 확인했다. `OPS-002`/`005`는 이 작업 환경에 EKS
   접근 권한이 없어 **실행 검증**만 못 한 상태다(README.md "주의사항"의 EKS 접근 미검증 경고 참고).
 - `SALES-001`은 KST 자정 전후 5분 이내에 실행되면 `SKIP_PRECONDITION`이 된다(위 "`AUDIT-001`,
-  `SALES-001`" 절 참고). `run-mandatory-gate.mjs`는 이 케이스를 `mandatoryApiCasesPassed` 계산에
-  포함시키므로, 하필 이 10분 구간에 필수 게이트가 겹쳐 돌면 실제 결함 없이 이 항목 하나 때문에
-  종합 판정이 `false`가 될 수 있다 — 하루 1440분 중 10분(약 0.7%)의 좁은 확률이라 별도 재시도
-  로직 없이 알려진 한계로만 남긴다.
+  `SALES-001`" 절 참고). `run-mandatory-gate.mjs`는 이 타이밍 의존성 때문에 `SALES-001`을
+  `mandatoryApiCasesPassed` 계산에서 뺐다(`AUTH-015`를 뺀 것과 같은 이유) — 이 케이스 자체는 그대로
+  실행·기록되지만, 이 좁은 시간대에 게이트를 돌렸다는 이유만으로 종합 판정이 실패하지는 않는다.
+  `AUDIT-001`은 이런 타이밍 의존성이 없어 그대로 필수 판정에 포함된다.

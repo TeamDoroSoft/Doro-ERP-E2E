@@ -112,9 +112,16 @@ export async function runMandatoryGate() {
   await waitForAuthValid01BucketRefill('CATALOG-001~003')
 
   steps.push(
+    // SALES-001은 mandatoryIds에서 뺐다 — audit-sales-connectivity.js의 isNearKstMidnight()가
+    // KST 자정 전후 5분 이내 실행이면 이 케이스를 SKIP_PRECONDITION으로 처리한다(하루 약 0.7%
+    // 구간). mandatoryApiPassed는 "전부 PASS"를 요구해 SKIP도 실패로 치므로, mandatoryIds에
+    // 넣어두면 이 좁은 시간대에 게이트를 돌렸다는 이유만으로 종합 판정이 실패한다 — AUTH-015를
+    // 뺀 것과 같은 이유(위 55~62행 참고)다. AUDIT-001은 이런 타이밍 의존성이 없어 그대로
+    // mandatoryIds에 남긴다. SALES-001 자체 결과는 그대로 실행·기록되며(results.jsonl/junit.xml),
+    // 필수 통과 판정에서만 빠진다.
     await runStep('AUDIT-001, SALES-001 (k6 audit-sales-connectivity)', () =>
       runK6Scenario('api/scenarios/audit-sales-connectivity.js', 'audit-sales-connectivity', [
-        'AUDIT-001', 'SALES-001',
+        'AUDIT-001',
       ]),
     ),
   )

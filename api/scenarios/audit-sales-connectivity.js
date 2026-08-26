@@ -68,7 +68,12 @@ export const options = {
   },
 }
 
-const MANDATORY_IDS = ['AUDIT-001', 'SALES-001']
+// queue-connectivity.js의 ALWAYS_ON_IDS와 같은 용도(로그인 실패 시 두 케이스 모두를
+// SKIP_PRECONDITION으로 기록하기 위한 목록)다 — "MANDATORY"라는 이름을 쓰지 않는 이유는
+// run-mandatory-gate.mjs가 SALES-001을 mandatoryApiCasesPassed 집계에서는 빼기 때문에(자정 경계
+// SKIP 리스크, 이 파일 상단 주석 참고), 여기서 "MANDATORY_IDS"라고 부르면 "필수 게이트 판정용
+// ID 목록"으로 오해될 수 있다.
+const ALWAYS_ON_IDS = ['AUDIT-001', 'SALES-001']
 
 // queue-connectivity.js의 STORE_UTC_OFFSET_MINUTES/todayBusinessDate()와 동일한 계산이다(그 파일
 // 27~34행 주석 참고) — AUTH_VALID_01 소속 매장이 Asia/Seoul(UTC+9, DST 없음)이라는 같은 전제.
@@ -110,7 +115,7 @@ export default function () {
   )
   if (loginRes.status !== 200) {
     const startedAt = new Date().toISOString()
-    for (const id of MANDATORY_IDS) {
+    for (const id of ALWAYS_ON_IDS) {
       record(env, {
         testCaseId: id,
         startedAt,
