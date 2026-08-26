@@ -80,8 +80,10 @@ export async function runMandatoryGate() {
   // QUEUE-001/002, CATALOG-001~003(배포 Frontend–Backend 종단 검증.md §10)도 AUTH_VALID_01로 로그인
   // 1회씩만 쓴다 — session-flow.js 직후(위 waitForAuthValid01BucketRefill로 방금 5로 꽉 채운
   // Bucket에서 session-flow가 3을 이미 썼으니 남은 건 2)에 바로 이어 붙여야 정확히 용량 안에서
-  // 끝난다(3+1+1=5). 이 두 단계 사이나 뒤에 AUTH_VALID_01을 더 쓰는 단계를 끼워 넣지 말 것 —
-  // 끼워 넣으려면 api/README.md의 "⚠️ 계정 Rate Limit Bucket 주의" 표부터 다시 계산해야 한다.
+  // 끝난다(3+1+1=5). 이 두 단계 사이에는 AUTH_VALID_01을 더 쓰는 단계를 끼워 넣지 말 것 — 끼워
+  // 넣으려면 api/README.md의 "⚠️ 계정 Rate Limit Bucket 주의" 표부터 다시 계산해야 한다. (아래
+  // AUDIT-001/SALES-001 단계는 이 두 단계 뒤에서 새로 5분을 대기해 Bucket을 다시 5로 채운 뒤 시작하므로
+  // 이 3+1+1=5 계산과는 무관하다 — 아래 waitForAuthValid01BucketRefill('CATALOG-001~003') 참고.)
   // QUEUE-003(Tier B, 상태 변경)은 caseIds에 넣지 않는다 — RUN_DESTRUCTIVE_QUEUE_TESTS=true가 없는
   // 이 필수 게이트에서는 항상 SKIP_PRECONDITION이라, AUTH-011~015 중 AUTH-015를 뺀 것과 같은 이유로
   // 뺐다(mandatoryApiPassed는 "전부 PASS"를 요구해 SKIP도 실패로 치기 때문). QUEUE-003 자체 결과는
@@ -96,6 +98,23 @@ export async function runMandatoryGate() {
     await runStep('CATALOG-001~003 (k6 catalog-connectivity)', () =>
       runK6Scenario('api/scenarios/catalog-connectivity.js', 'catalog-connectivity', [
         'CATALOG-001', 'CATALOG-002', 'CATALOG-003',
+      ]),
+    ),
+  )
+
+  // AUDIT-001, SALES-001(배포 Frontend–Backend 종단 검증.md §10)은 audit-sales-connectivity.js가
+  // 별도 k6 프로세스라 자기 자신의 AUTH_VALID_01 로그인이 1회 더 필요하다(프로세스 간 Cookie Jar
+  // 공유 불가 — audit-sales-connectivity.js 파일 상단 주석 참고). 바로 위 QUEUE-001~002 →
+  // CATALOG-001~003으로 3+1+1=5를 정확히 다 쓴 상태이므로, 대기 없이 이어 붙이면 이 로그인이
+  // 잘못된 429로 실패한다 — 여기서 5분을 대기해 Bucket을 다시 5로 채운 뒤 이 새 단계가 1만 쓰고
+  // 끝나는 것으로 예산 계산이 리셋된다. 이 단계 뒤에 다시 AUTH_VALID_01을 쓰는 단계를 추가하려면
+  // 이 주석과 api/README.md의 "⚠️ 계정 Rate Limit Bucket 주의" 표를 함께 갱신할 것.
+  await waitForAuthValid01BucketRefill('CATALOG-001~003')
+
+  steps.push(
+    await runStep('AUDIT-001, SALES-001 (k6 audit-sales-connectivity)', () =>
+      runK6Scenario('api/scenarios/audit-sales-connectivity.js', 'audit-sales-connectivity', [
+        'AUDIT-001', 'SALES-001',
       ]),
     ),
   )
