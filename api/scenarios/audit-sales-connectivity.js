@@ -188,6 +188,13 @@ export default function () {
     const businessDate = todayBusinessDate()
     const res = getJson(`${env.apiOrigin}/api/v1/sales/daily?businessDate=${businessDate}`, { jar })
     const pass = res.status === 200
+    // SalesService.requireCurrentBusinessDate()는 commerce-api 자신의 로직이 아니라 내부적으로
+    // store-access-api를 호출해(storeContexts.findCurrentContext()) 영업일을 확인한다 — 그 호출이
+    // 실패하면 SERVICE_UNAVAILABLE(503)을 던진다(SalesService.java 확인 완료). 즉 SALES-001이
+    // 503으로 실패하면 원인이 sales 라우팅 자체가 아니라 commerce-api→store-access-api 내부
+    // 의존성일 가능성이 높다 — AUDIT-001의 role 불일치 힌트(위 참고)와 같은 이유로, 이 가능성을
+    // errorClass에 명시해 나중에 원인 파악을 돕는다.
+    const possibleStoreAccessDependencyFailure = res.status === 503
     check(null, { 'SALES-001 200': () => pass })
     record(env, {
       testCaseId: 'SALES-001',
@@ -199,7 +206,12 @@ export default function () {
       observed: { httpStatus: res.status, accountRole },
       requestId: header(res, 'X-Request-Id'),
       assertions: { status200: pass },
-      errorClass: pass ? null : 'ASSERTION_MISMATCH',
+      errorClass: pass
+        ? null
+        : possibleStoreAccessDependencyFailure
+          ? 'commerce-api가 내부적으로 의존하는 store-access-api 연결 문제일 가능성(503) — ' +
+            'sales 라우팅 자체보다 그쪽을 먼저 확인 필요'
+          : 'ASSERTION_MISMATCH',
     })
   })
 }
