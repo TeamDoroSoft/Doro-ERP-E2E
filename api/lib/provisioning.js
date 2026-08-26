@@ -10,6 +10,21 @@ export function randomToken() {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
 }
 
+// k6는 Node가 아니라 goja 런타임이라 crypto.randomUUID()가 없다. QUEUE-003(Idempotency-Key)처럼
+// 서버가 실제 UUID 형식을 요구하는 자리에 쓸 최소 UUID v4 생성기 — 외부 의존성 없이
+// Math.random()만으로 RFC 4122 버전/변형 비트를 채운다. 암호학적 品質은 필요 없는 자리
+// (테스트 요청 식별자)라 Math.random()으로 충분하다.
+export function randomUuidV4() {
+  const hex = []
+  for (let i = 0; i < 256; i++) hex[i] = (i < 16 ? '0' : '') + i.toString(16)
+  const bytes = new Array(16)
+  for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80 // variant 10xx
+  const h = bytes.map((b) => hex[b])
+  return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`
+}
+
 // PasswordPolicyValidator.MIN_LENGTH = 15. 무작위 문자열이라 블록리스트·서비스 파생어 회피에
 // 유리하다 (provision-local-rehearsal-account.mjs와 같은 접근).
 export function randomPassword(prefix) {

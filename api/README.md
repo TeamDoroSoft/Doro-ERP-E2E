@@ -1,7 +1,8 @@
 # doro-erp-e2e / api
 
-k6 기반 배포 API Runner. `AUTH-*`, `SESS-*` 계약을 실제 배포 Origin에 직접 호출해 검증한다.
-브라우저 Network 관찰이 필요한 `FE-BE-*`는 여기서 다루지 않는다 — `../browser`(Playwright) 참고.
+k6 기반 배포 API Runner. `AUTH-*`, `SESS-*`, `QUEUE-*`, `CATALOG-*` 계약을 실제 배포 Origin에 직접
+호출해 검증한다. 브라우저 Network 관찰이 필요한 `FE-BE-*`는 여기서 다루지 않는다 —
+`../browser`(Playwright) 참고.
 
 ## 실행
 
@@ -139,6 +140,106 @@ node api/lib/build-report.mjs /tmp/nonexposure.log auth-account-nonexposure AUTH
 `200`(로그인 성공)이 나왔다. 기다리지 않고 5번째 실패 직후 바로 확인하도록 고쳐서,
 `AUTH-031`과 같은 판정 기준(`401` 또는 `429` 둘 다 "안전한 거절"로 인정, `200`이면 실패)을 적용했다.
 
+## `QUEUE-001`~`003`: `queue-api` 연결성·업무 로직 (Tier A/B)
+
+`api/scenarios/queue-connectivity.js`. `AUTH_VALID_01`(OWNER) 하나만으로 실행된다 —
+`EntryQueueService.requireEmployee()`/`FulfillmentQueueService`가 요구하는 Role은 OWNER/MANAGER/STAFF
+전부라 OWNER 계정으로 충분하다(전용 정적 계정 불필요).
+
+```bash
+DORO_API_ORIGIN=https://doro.minseok.click \
+DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
+  k6 run --log-format=raw api/scenarios/queue-connectivity.js > /tmp/queue-connectivity.log 2>&1
+node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUEUE-001,QUEUE-002
+
+# QUEUE-003(상태 변경)까지 실행하려면 플래그를 추가로 켠다
+RUN_DESTRUCTIVE_QUEUE_TESTS=true DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... \
+DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
+  k6 run --log-format=raw api/scenarios/queue-connectivity.js > /tmp/queue-connectivity.log 2>&1
+node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUEUE-001,QUEUE-002,QUEUE-003
+```
+
+- `QUEUE-001`(`GET /api/v1/queues/fulfillment`)·`QUEUE-002`(`GET /api/v1/queues/entry?businessDate=<오늘>`)는
+  전제조건 없이 항상 실행된다 — 목록이 비어 있어도 `200`이다(`FulfillmentQueueController`/`EntryQueueController`
+  둘 다 존재 검사 없는 단순 SELECT).
+- `<오늘>`(영업일)은 `AUTH_VALID_01` 소속 매장이 `Asia/Seoul`이라는 전제 아래 UTC+9 고정 오프셋으로
+  계산한다(`queue-connectivity.js`의 `todayBusinessDate()`) — 매장은 원칙상 임의의 IANA Time Zone을
+  가질 수 있지만(`Docs/Specifications/01 업체·매장 관리/ADR.md`), 이 전제는 배포 Frontend–Backend
+  종단 검증.md §10에 명시돼 있다. `AUTH_VALID_01`의 소속 매장 시간대가 바뀌면 이 계산도 함께 갱신해야 한다.
+- `QUEUE-003`(Entry 등록 → `WAITING` 확인 → 취소 → `CANCELLED` 확인 → 재취소)은
+  `RUN_DESTRUCTIVE_QUEUE_TESTS=true`가 있어야 실행된다 — 취소된 Entry 행과 그 Store·영업일 대기
+  순번 소비를 실 테넌트 데이터에 영구히 남기기 때문이다(배포 Frontend–Backend 종단 검증.md §10 참고).
+  `AUTH-030`~`034`가 쓰는 `RUN_DESTRUCTIVE_AUTH_TESTS`는 인증 도메인 전용 위험(계정 잠금·Rate Limit)을
+  이름에 명시한 플래그라 재사용하지 않고 별도 플래그를 뒀다.
+- `Idempotency-Key`는 k6 goja 런타임에 `crypto.randomUUID()`가 없어 `api/lib/provisioning.js`의
+  `randomUuidV4()`(`Math.random()`만으로 RFC 4122 버전/변형 비트를 채우는 최소 구현)로 매 실행마다
+  새로 만든다.
+- 목록 조회 단언이 실패해도 등록된 Entry가 `WAITING`으로 방치되지 않도록, 등록에 성공했다면 취소는
+  `try`/`finally`로 항상 시도한다(`scripts/verify-partial-pod-failure.mjs`의 "항상 정리 시도" 철학과 동일).
+  재취소는 `QueueErrorCode.STATE_CONFLICT`(`409`)로 거절돼야 한다(`QueueErrorCode.java` 확인 완료).
+
+## `CATALOG-001`~`006`: `commerce-api` Catalog 연결성 (Tier A)·업무 로직 (Tier B)
+
+`api/scenarios/catalog-connectivity.js`. `CATALOG-001`~`003`(Tier A)은 `AUTH_VALID_01`(OWNER)의
+`SESSION` Cookie만 있으면 되는 비파괴 조회이며 전제조건 없이 항상 실행된다.
+
+```bash
+DORO_API_ORIGIN=https://doro.minseok.click \
+DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
+  k6 run --log-format=raw api/scenarios/catalog-connectivity.js > /tmp/catalog-connectivity.log 2>&1
+node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity CATALOG-001,CATALOG-002,CATALOG-003
+
+# CATALOG-004~006(Category·Product 생성·수정·품절 전환)까지 실행하려면 플래그와 AUTH_ROLE_OWNER_01을 추가로 준다
+RUN_DESTRUCTIVE_CATALOG_TESTS=true DORO_API_ORIGIN=... \
+DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
+DORO_AUTH_ROLE_OWNER_01_TENANT_CODE=... DORO_AUTH_ROLE_OWNER_01_LOGIN_ID=... DORO_AUTH_ROLE_OWNER_01_PASSWORD=... \
+  k6 run --log-format=raw api/scenarios/catalog-connectivity.js > /tmp/catalog-connectivity.log 2>&1
+node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity \
+  CATALOG-001,CATALOG-002,CATALOG-003,CATALOG-004,CATALOG-005,CATALOG-006
+```
+
+- `CATALOG-001`(`GET /api/v1/catalog/menu`)은 `EdgeCatalogController`가 `SESSION` Cookie XOR Kiosk
+  Cookie만 확인한다 — 이 러너는 SESSION만 보내므로 `AMBIGUOUS_AUTHENTICATION`과 무관하다.
+- `CATALOG-002`(`categories`)/`CATALOG-003`(`products`)은 `CommerceManagementRouteController` →
+  `CatalogService.requireCatalogOperator()`를 거치며, `ActorRole.canChangeSoldOut()`이 OWNER/MANAGER/STAFF
+  전부에 대해 `true`라 OWNER로 충분하다(Category·Product 관리 자체를 바꾸는 `canManageCatalog()`은
+  OWNER/MANAGER만 필요하지만 조회는 더 넓게 허용됨 — `ActorRole.java` 확인 완료).
+- Category/Product가 하나도 없는 테넌트라도 `loadManagedCategories()`/`loadManagedProducts()`는 평범한
+  Repository 조회라 빈 배열과 함께 `200`을 반환한다(`CatalogService.java` 확인 완료).
+
+### `CATALOG-004`~`006`: Category·Product 생성·수정·품절 전환 (Tier B, 기본 비활성)
+
+`RUN_DESTRUCTIVE_CATALOG_TESTS=true`가 있어야 실행된다(그 외엔 세 케이스 전부
+`SKIP_PRECONDITION`) — `QUEUE-003`과 같은 이유로 실제로 상태를 바꾸기 때문이다. `CATALOG-001`~`003`과
+달리 `AUTH_VALID_01`이 아니라 `AUTH_ROLE_OWNER_01`로 별도 로그인한다(파일 안에서 두 번째 로그인 호출) —
+`AUTH_VALID_01`의 테넌트(`sample-store`)는 실 데모 테넌트라 영구 Catalog 데이터를 남기고 싶지 않고,
+`AUTH_ROLE_OWNER_01`의 테넌트(`e2e-auth-active`)는 실 고객이 0명인 합성 E2E 전용 테넌트라 영구히
+남아도 안전하기 때문이다(DB 직접 조회로 확인 완료). `AUTH_ROLE_OWNER_01`이 env에 없으면
+`auth-lockout-ratelimit.js`의 `if (!env.staticAccounts.lockout)`과 같은 패턴으로 세 케이스 모두
+`SKIP_PRECONDITION`.
+
+- `CATALOG-004`(Category 생성 → 목록 확인 → `PATCH`+`If-Match` 수정 → 확인 → 비활성화)와
+  `CATALOG-005`(전용 Category 생성 → 그 아래 Product 생성 → 목록 확인 → 수정 → 확인 → 상품·Category
+  비활성화)는 서로 다른 전용 Category를 각자 새로 만든다 — 하나가 실패해도 다른 하나의 원인 분리가
+  쉽도록 의도적으로 독립시켰다(CATALOG-005가 CATALOG-004의 Category를 재사용하지 않음).
+- `CATALOG-006`(품절 `true`→확인→`false`→확인)은 `CATALOG-005`가 만든 Product를 그대로 이어받는다 —
+  같은 k6 iteration 안에서 그룹이 순서대로(동기) 실행되므로 `CATALOG-005`가 실패해 Product를 못
+  만들었으면 `CATALOG-006`도 `SKIP_PRECONDITION`이다. 이 케이스는 셋 중 유일하게 **완전히 가역적**이다
+  (일반적인 Audit 기록 외에는 실 테넌트에 영구 흔적을 남기지 않는다) — 그래도 독립적으로 실행할 방법이
+  없어(대상 Product가 있어야 하므로) 같은 플래그로 묶었다.
+- `DELETE` Endpoint가 없어 생성한 Category·Product는 영구히 남는다 — 그래서 실행마다 겹치지 않는
+  이름(`E2E-CATALOG-*-${randomUuidV4().slice(0,8)}`)으로 만들고, 결과와 무관하게 `finally`에서
+  `active:false` 비활성화를 반드시 시도한다(`QUEUE-003`의 "항상 정리 시도" 철학과 동일).
+- `PATCH` 계약은 `CatalogService.updateCategory()`/`updateProduct()`를 직접 확인한 결과 **부분
+  업데이트**다 — Body의 각 필드가 `null`이면 그 필드는 바꾸지 않는다. 그래서 비활성화 호출은
+  `{active:false}`만 보내도 안전하다.
+- Create/Update 응답은 `ETag` Header(`"<version>"`)뿐 아니라 JSON Body 자체에도 `version` 필드를
+  그대로 담고 있다(`CategoryView`/`ProductView`가 Java record라 Body 그대로 직렬화됨 — 확인 완료).
+- `POST /api/v1/sales/daily/{date}/close`(영업일 마감)는 이 러너의 대상이 아니다 — 되돌릴 Endpoint가
+  없는 회계 확정 동작이라 반복 실행 시 영업일을 영구히 잠그는 실제 위험이 있어, 구현 난이도가 아니라
+  실행 자체의 위험 때문에 의도적으로 제외했다(아래 "미구현 항목"의 A/B/C 분류와는 다른 사유 —
+  배포 Frontend–Backend 종단 검증.md §10 참고).
+
 ## `OPS-001`/`OPS-003`: 장애 주입 (기본 비활성, 로컬 전용)
 
 `scripts/run-fault-injection.mjs`는 k6가 아니라 별도 Node 스크립트다 — Docker 컨테이너를 직접
@@ -168,15 +269,28 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 |---|---|
 | `auth-mandatory.js` | 4회 (`AUTH-001`+`AUTH-002`+`AUTH-024` 병합 1회, `AUTH-003` 1회, `AUTH-004` 1회, `AUTH-010` 1회) |
 | `session-flow.js` | 3회 (`SESS-001`/`002`/`003`/`006` 공용 최초 로그인 1회 + `SESS-007` 내부의 사전 로그인·재로그인 2회) — `SESS-004`/`005`는 별도 정적 계정(`AUTH_TEMP_PASSWORD_01`/`AUTH_PASSWORD_ROTATE_01`)을 써서 이 Bucket을 건드리지 않는다 |
+| `queue-connectivity.js` | 1회 (`QUEUE-001`/`002` 공용 로그인) — `QUEUE-003`도 같은 로그인을 재사용해 추가 호출 없음 |
+| `catalog-connectivity.js` | 1회 (`CATALOG-001`~`003` 공용 로그인) — `CATALOG-004`~`006`은 `AUTH_VALID_01`이 아니라 `AUTH_ROLE_OWNER_01`로 별도 로그인해 이 Bucket을 전혀 건드리지 않는다(아래 참고) |
 | **`../browser` (Playwright) FE-BE-002~006** | 성공 로그인 여러 회 + 실패 로그인 1회 |
 
-**용량 5·분당 1회 보충인데 위 세 스크립트를 합치면 한 번에 5를 훌쩍 넘는다 — 대기 없이 이어서
+**`AUTH_ROLE_OWNER_01`은 `AUTH_VALID_01`과 별개의 계정 단위 Rate Limit Bucket을 쓴다** — 서버측
+Bucket이 `(tenantCode, loginId)` 단위로 격리돼 있어(`AUTH-030`~`034`가 검증하는 것과 같은 계정
+단위 Bucket 구조), `CATALOG-004`~`006`이 `RUN_DESTRUCTIVE_CATALOG_TESTS=true`로 추가 로그인 1회를
+써도 위 표의 `AUTH_VALID_01` 소진 계산(3+1+1=5)에는 전혀 영향을 주지 않는다. 확인 결과 non-issue이며,
+`run-mandatory-gate.mjs`/`run-full-gate.mjs`의 기존 대기 로직을 바꿀 필요가 없다.
+
+**용량 5·분당 1회 보충인데 위 스크립트들을 합치면 한 번에 5를 훌쩍 넘는다 — 대기 없이 이어서
 돌리면 뒤에 실행되는 케이스가 실제 결함이 아닌 `429 AUTH_RATE_LIMITED`로 잘못 실패한다.** 이 문제는
-저장소 루트의 `scripts/run-mandatory-gate.mjs`(오케스트레이터)가 세 단계 사이에 Bucket이 완전히
-다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다 — 아래 예시처럼 손으로 직접
+저장소 루트의 `scripts/run-mandatory-gate.mjs`(오케스트레이터)가 단계 사이에 Bucket이 완전히
+다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다 — `session-flow.js`(3회) 직후에는
+`queue-connectivity.js`(1회) → `catalog-connectivity.js`(1회)를 추가 대기 없이 바로 이어붙이는데,
+그 앞의 5분 대기로 Bucket이 5로 꽉 찬 상태에서 3+1+1=5로 정확히 맞춰뒀기 때문이다(그 사이·뒤에
+`AUTH_VALID_01` 로그인을 더 쓰는 단계를 끼워 넣으면 이 계산이 깨진다). 아래 예시처럼 손으로 직접
 이어붙여 실행할 때만 다음 중 하나로 직접 대응해야 한다.
 
-- `auth-mandatory.js` → `session-flow.js` → `browser` 순서로 실행하되 각 사이 최소 5분 이상 간격을 둔다.
+- `auth-mandatory.js` → `session-flow.js` → `queue-connectivity.js` → `catalog-connectivity.js` → `browser`
+  순서로 실행하되 각 사이 최소 5분 이상 간격을 둔다(단, `session-flow.js` → `queue-connectivity.js` →
+  `catalog-connectivity.js` 구간은 위 설명대로 대기 없이 이어붙여도 정확히 용량 안에서 끝난다).
 - 반복 실행이 잦다면 dev 환경에서 `sample-store`/`owner` 전용으로 Rate Limit 용량을 늘리는 걸
   인프라팀에 요청한다(운영 계정에는 적용하지 않는다).
 - Client IP Bucket(기본 용량 30, 분당 6 보충)은 이 정도 호출량으로는 넉넉하므로 별도 조치 불필요.

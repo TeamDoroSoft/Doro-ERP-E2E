@@ -13,7 +13,7 @@ doro-erp-e2e/
 ├── browser/            # Playwright 배포 E2E — FE-BE-* (실제 배포 화면, Network 관찰 포함)
 │   ├── tests/
 │   └── lib/
-├── api/                # k6 배포 API Runner — AUTH-*, SESS-*, OPS-*
+├── api/                # k6 배포 API Runner — AUTH-*, SESS-*, OPS-*, QUEUE-*, CATALOG-*
 │   ├── scenarios/
 │   └── lib/
 ├── shared/             # 두 러너가 공유하는 결과 스키마/판정 규칙 정의 (이 저장소 자체가 정본)
@@ -39,6 +39,35 @@ doro-erp-e2e/
 
 개별 스위트를 한 번에 이어 실행하는 `scripts/run-mandatory-gate.mjs`와 `scripts/run-full-gate.mjs`도
 추가했다. 포함 범위와 파괴적 항목 안전장치는 아래 "오케스트레이션 스크립트 사용법" 참고.
+
+**`queue-api`(대기열)와 `commerce-api` Catalog 도메인 연결성 검증(`QUEUE-001`~`003`,`CATALOG-001`~`006`)도
+추가했다** — 배포 Frontend–Backend 종단 검증.md §10. Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`)는
+`AUTH_VALID_01` 하나만으로 항상 실행되고, 전용 정적 계정을 새로 요구하지 않는다. Tier B의
+`CATALOG-004`~`006`은 `AUTH_ROLE_OWNER_01` 정적 계정을 쓴다(아래 설명 참고).
+
+| ID | Tier | 시나리오 | 구현 위치 |
+|---|---|---|---|
+| `QUEUE-001` | A | `GET /api/v1/queues/fulfillment` `200` | `api/scenarios/queue-connectivity.js` |
+| `QUEUE-002` | A | `GET /api/v1/queues/entry?businessDate=<오늘>` `200` | `api/scenarios/queue-connectivity.js` |
+| `QUEUE-003` | B | Entry 등록 → `WAITING` 확인 → 취소 → `CANCELLED` 확인 → 재취소 충돌(`409`) | `api/scenarios/queue-connectivity.js`(`RUN_DESTRUCTIVE_QUEUE_TESTS=true` 필요) |
+| `CATALOG-001` | A | `GET /api/v1/catalog/menu` `200` | `api/scenarios/catalog-connectivity.js` |
+| `CATALOG-002` | A | `GET /api/v1/catalog/categories` `200` | `api/scenarios/catalog-connectivity.js` |
+| `CATALOG-003` | A | `GET /api/v1/catalog/products` `200` | `api/scenarios/catalog-connectivity.js` |
+| `CATALOG-004` | B | Category 생성 → 목록 확인 → `PATCH`+`If-Match` 수정 → 확인 → 비활성화 | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
+| `CATALOG-005` | B | 전용 Category 생성 → Product 생성 → 목록 확인 → 수정 → 확인 → 상품·Category 비활성화 | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
+| `CATALOG-006` | B | 품절 `true`→확인→`false`→확인(`CATALOG-005`의 Product 재사용, 완전 가역) | `api/scenarios/catalog-connectivity.js`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
+
+`QUEUE-003`은 취소된 Entry 행과 대기 순번 소비를 실 테넌트 데이터에 영구히 남기는 상태 변경 흐름이라
+`RUN_DESTRUCTIVE_QUEUE_TESTS=true`를 명시해야 실행된다 — `AUTH-030`~`034`가 쓰는
+`RUN_DESTRUCTIVE_AUTH_TESTS`는 인증 도메인 전용 위험(계정 잠금·Rate Limit)을 이름에 명시한 플래그라
+대기열 도메인 상태 변경에 재사용하지 않고 별도 플래그를 뒀다. `CATALOG-004`~`006`도 같은 이유로
+`RUN_DESTRUCTIVE_CATALOG_TESTS`라는 Catalog 도메인 전용 플래그를 별도로 뒀다 — 셋 다 하나로 묶은
+이유는 `CATALOG-006`(가역)조차 `CATALOG-005`가 만든 Product 없이는 단독 실행이 불가능해서
+독립적으로 켜고 끌 실익이 없기 때문이다. `CATALOG-004`~`006`은 `CATALOG-001`~`003`과 달리
+`AUTH_VALID_01`(실 데모 테넌트 `sample-store`)이 아니라 `AUTH_ROLE_OWNER_01`(실 고객이 없는 합성
+테넌트 `e2e-auth-active`)로 로그인한다 — `DELETE` Endpoint가 없어 생성한 Category·Product가
+영구히 남기 때문에, 그 잔여물을 실 데모 데이터가 아니라 전용 합성 테넌트에만 남기기 위해서다.
+자세한 내용은 `api/README.md` 참고.
 
 **잠금·Rate Limit(`AUTH-030`,`031`,`033`,`034`)과 장애 주입(`OPS-001`,`003`)도 추가했다** — 기본으로는
 실행되지 않는다(안전 장치):
@@ -122,13 +151,13 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 
 개별 스위트를 하나씩 손으로 이어붙이지 않도록 `scripts/run-mandatory-gate.mjs`와 `scripts/run-full-gate.mjs` 두 오케스트레이션 스크립트를 추가했다.
 
-- **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구).
-- **`node scripts/run-full-gate.mjs`** — 위 전체 + `FE-BE-010`~`015`(Playwright `tests/fe-be-conditional.spec.ts`) → `AUTH-030`/`031`/`033`/`034`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다.
+- **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `QUEUE-001`~`002`(k6 `api/scenarios/queue-connectivity.js`) → `CATALOG-001`~`003`(k6 `api/scenarios/catalog-connectivity.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구). `QUEUE-001`~`002`/`CATALOG-001`~`003` 단계는 `session-flow.js` 직후 `AUTH_VALID_01` 로그인을 1회씩 더 쓰므로 이 순서를 바꾸지 말 것(아래 "⚠️ 계정 Rate Limit Bucket 주의"·`api/README.md` 참고).
+- **`node scripts/run-full-gate.mjs`** — 위 전체 + `QUEUE-003`(안내만 출력 — `RUN_DESTRUCTIVE_QUEUE_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `queue-connectivity.js` 단계 안에서 이미 실행됨) → `FE-BE-010`~`015`(Playwright `tests/fe-be-conditional.spec.ts`) → `AUTH-030`/`031`/`033`/`034`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다.
 - `OPS-001`/`OPS-003`은 `DORO_ENVIRONMENT`가 `local`로 시작할 때만 실제로 실행된다 — 그 외의(실 배포) 대상에서는 `RUN_FAULT_INJECTION_TESTS` 설정과 무관하게 자동으로 SKIP된다. `scripts/run-fault-injection.mjs`가 로컬 Docker 주소·컨테이너 이름에 하드코딩돼 있어 실 배포를 대상으로 실행할 수 없기 때문에, 잘못된(로컬) 대상을 검증하고도 실 배포를 검증한 것처럼 보이는 상황을 막기 위한 안전장치다.
 - 반대로 `OPS-002`/`OPS-005`는 `DORO_ENVIRONMENT`가 `local`로 시작하면 자동으로 SKIP된다 — 둘 다 `kubectl`로 실 EKS의 `store-access-api`를 직접 건드리는 실 배포 전용 스크립트라, 로컬 리허설 대상에서 실행할 이유가 없다(이 머신에 다른 실제 클러스터를 가리키는 `kubectl` 컨텍스트가 우연히 설정돼 있다면 로컬 리허설 도중 그 클러스터를 건드리는 일을 막기 위함).
 - `RUN_DESTRUCTIVE_AUTH_TESTS=true`로 `run-full-gate.mjs`를 돌리면 `AUTH-030`~`034` 단계 직전에 **약 65초를 그대로 대기한다** — 바로 앞에서 `AUTH-015`가 `AUTH_LOCKOUT_01`의 Rate Limit Bucket을 소진시켜 놓고 가기 때문에, 대기 없이 곧바로 `AUTH-030`을 돌리면 5회 연속 `401`이어야 할 응답 중 일부가 `429`로 나와 실제 결함이 아닌 순서 문제로 FAIL이 날 수 있다.
 - 두 스크립트 다 `DORO_RUN_ID`를 자동 생성하거나 이미 export돼 있으면 그대로 쓰고, 한 단계가 실패해도 나머지 단계는 계속 진행한 뒤 마지막에 종합 결과를 보여주고 실패가 하나라도 있으면 exit code 1로 끝난다. **`build-combined-summary.mjs` 단계의 exit code는 완화 판정(`frontBackConnected`)이 아니라 문서 §7 그대로의 엄격 판정(`passConnected`) 기준이다** — 둘이 갈리면 어느 §7 세부 조건이 걸렸는지 콘솔에 같이 출력된다.
-- **파괴적 플래그는 오케스트레이터가 절대 자동으로 켜지 않는다** — `RUN_DESTRUCTIVE_AUTH_TESTS=true`(`AUTH-030`/`031`/`033`/`034`용), `RUN_FAULT_INJECTION_TESTS=true`(`FE-BE-012` 및 `OPS-001`/`002`/`003`/`005`의 `--confirm` 대신 재사용됨)를 실행 전 직접 export해야만 해당 케이스가 실제로 돈다. 안 켜져 있으면 무엇을 export해야 하는지 안내 문구를 찍고 그 단계만 SKIP한다.
+- **파괴적 플래그는 오케스트레이터가 절대 자동으로 켜지 않는다** — `RUN_DESTRUCTIVE_AUTH_TESTS=true`(`AUTH-030`/`031`/`033`/`034`용), `RUN_DESTRUCTIVE_QUEUE_TESTS=true`(`QUEUE-003`용), `RUN_FAULT_INJECTION_TESTS=true`(`FE-BE-012` 및 `OPS-001`/`002`/`003`/`005`의 `--confirm` 대신 재사용됨)를 실행 전 직접 export해야만 해당 케이스가 실제로 돈다. 안 켜져 있으면 무엇을 export해야 하는지 안내 문구를 찍고 그 단계만 SKIP한다.
 
 ```bash
 export DORO_FRONTEND_ORIGIN=https://doro.minseok.click
@@ -147,7 +176,7 @@ node scripts/run-mandatory-gate.mjs
 
 ## 조건부/파괴적 항목을 구분한 이유
 
-이 구분은 `Docs/Specifications/운영·배포/배포 Frontend–Backend 종단 검증.md` 문서 자체의 구조를 그대로 따른다 — §3 필수 Browser Gate + §5 공통 계약의 배포 재검증(대표 Slice) + §6의 비파괴 항목(`OPS-004`)만 "필수 게이트"(`run-mandatory-gate.mjs`)에 넣었다. 반대로 §4 조건부 Browser 시나리오, §5의 잠금/Rate Limit·Provider 오응답(`OPS-002`), §6의 Pod 장애 주입(`OPS-005`)처럼 실제 서비스·계정·Pod·Service 라우팅에 실질적인 영향을 주는 항목은 "전체 게이트"(`run-full-gate.mjs`)로 분리해, 명시적 승인(플래그 또는 `--confirm`) 없이는 절대 자동으로 돌지 않도록 설계했다.
+이 구분은 `Docs/Specifications/운영·배포/배포 Frontend–Backend 종단 검증.md` 문서 자체의 구조를 그대로 따른다 — §3 필수 Browser Gate + §5 공통 계약의 배포 재검증(대표 Slice) + §6의 비파괴 항목(`OPS-004`) + §10의 Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`)만 "필수 게이트"(`run-mandatory-gate.mjs`)에 넣었다. 반대로 §4 조건부 Browser 시나리오, §5의 잠금/Rate Limit·Provider 오응답(`OPS-002`), §6의 Pod 장애 주입(`OPS-005`), §10의 Tier B(`QUEUE-003`,`CATALOG-004`~`006`)처럼 실제 서비스·계정·Pod·Service·테넌트 데이터에 실질적인 영향을 주는 항목은 "전체 게이트"(`run-full-gate.mjs`)로 분리해, 명시적 승인(플래그 또는 `--confirm`) 없이는 절대 자동으로 돌지 않도록 설계했다.
 
 ## 미구현 항목 설명
 
@@ -163,6 +192,10 @@ node scripts/run-mandatory-gate.mjs
 ### C. 실행 비용 때문에 제외
 
 - `AUTH-032`(잠금 단계 1→2→4→8→15분 증가) — 기술적으로는 구현 가능하지만 실제 시계로 15분 이상 대기해야 해서 자동화 스위트에 넣지 않았다.
+
+### D. 실행 자체의 위험 때문에 의도적으로 제외 (구현 난이도와 무관)
+
+- `POST /api/v1/sales/daily/{date}/close`(영업일 마감) — `CATALOG-004`~`006`을 추가하며 함께 검토했으나, 되돌릴 Endpoint가 없는 회계·정산 확정 동작이라 반복 실행 시 그 영업일을 영구히 잠그는 실제 재무 리스크가 있다. `QUEUE-003`이 남기는 부작용(취소된 Entry 행, 대기 순번 소비)이나 `CATALOG-004`~`006`이 남기는 부작용(비활성화된 Category·Product)과 달리 "정상적으로 끝나면 무해"가 성립하지 않는 종류의 상태 변경이라, A/B/C 어디에도 넣지 않고 별도 항목으로 뺐다 — 구현이 어렵거나 시간이 걸려서가 아니라 실행 자체가 위험해서 자동화 스위트 대상에서 제외했다.
 
 **참고**: `FE-BE-012`/`OPS-001`/`OPS-002`/`OPS-005`, 그리고 `AUTH-013`/`014`/`015`, `AUTH-030`/`031`,
 `FE-BE-010`/`014`, `SESS-004`/`005`는 위 A/B/C와 다르다 — "미구현"이 아니라 코드는 이미 완성돼 있고,

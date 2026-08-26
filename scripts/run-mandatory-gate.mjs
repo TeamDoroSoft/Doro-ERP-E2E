@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 필수 게이트 — 배포 Frontend–Backend 종단 검증.md §3(필수 Gate) + §5(공통 계약 재검증
-// 대표 Slice) + §6의 OPS-004(비파괴 관찰) + §7(PASS_CONNECTED 최종 판정)을 한 번에 실행한다.
+// 대표 Slice) + §6의 OPS-004(비파괴 관찰) + §10의 QUEUE-001/002·CATALOG-001~003(확장 서비스
+// 연결성 검증 Tier A) + §7(PASS_CONNECTED 최종 판정)을 한 번에 실행한다.
 //
 // 여기 포함된 항목은 전부 파괴적 플래그 없이도 안전하다 — 실행 못 할 조건(Fixture·전용 정적
 // 계정 부재)을 만나면 각 케이스가 스스로 SKIP_PRECONDITION으로 넘어갈 뿐, 컨테이너를
@@ -72,6 +73,29 @@ export async function runMandatoryGate() {
     await runStep('SESS-001~003,006,007 (+004/005 조건부) (k6 session-flow)', () =>
       runK6Scenario('api/scenarios/session-flow.js', 'session-flow', [
         'SESS-001', 'SESS-002', 'SESS-003', 'SESS-006', 'SESS-007', 'SESS-004', 'SESS-005',
+      ]),
+    ),
+  )
+
+  // QUEUE-001/002, CATALOG-001~003(배포 Frontend–Backend 종단 검증.md §10)도 AUTH_VALID_01로 로그인
+  // 1회씩만 쓴다 — session-flow.js 직후(위 waitForAuthValid01BucketRefill로 방금 5로 꽉 채운
+  // Bucket에서 session-flow가 3을 이미 썼으니 남은 건 2)에 바로 이어 붙여야 정확히 용량 안에서
+  // 끝난다(3+1+1=5). 이 두 단계 사이나 뒤에 AUTH_VALID_01을 더 쓰는 단계를 끼워 넣지 말 것 —
+  // 끼워 넣으려면 api/README.md의 "⚠️ 계정 Rate Limit Bucket 주의" 표부터 다시 계산해야 한다.
+  // QUEUE-003(Tier B, 상태 변경)은 caseIds에 넣지 않는다 — RUN_DESTRUCTIVE_QUEUE_TESTS=true가 없는
+  // 이 필수 게이트에서는 항상 SKIP_PRECONDITION이라, AUTH-011~015 중 AUTH-015를 뺀 것과 같은 이유로
+  // 뺐다(mandatoryApiPassed는 "전부 PASS"를 요구해 SKIP도 실패로 치기 때문). QUEUE-003 자체 결과는
+  // 이 단계가 만드는 results.jsonl/junit.xml에 그대로 기록된다 — 필수 통과 판정에서만 빠진다.
+  steps.push(
+    await runStep('QUEUE-001~002 (k6 queue-connectivity)', () =>
+      runK6Scenario('api/scenarios/queue-connectivity.js', 'queue-connectivity', ['QUEUE-001', 'QUEUE-002']),
+    ),
+  )
+
+  steps.push(
+    await runStep('CATALOG-001~003 (k6 catalog-connectivity)', () =>
+      runK6Scenario('api/scenarios/catalog-connectivity.js', 'catalog-connectivity', [
+        'CATALOG-001', 'CATALOG-002', 'CATALOG-003',
       ]),
     ),
   )
