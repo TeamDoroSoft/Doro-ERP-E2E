@@ -156,8 +156,13 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 있어도(예외 발생 포함) `finally`에서 다시 올리는 것을 보장한다. 결과는 `reports/<runId>.ops-00N.results.jsonl`에
 쌓인다(`build-report.mjs`를 거치지 않고 스크립트가 직접 씀 — 케이스가 하나뿐이라 후처리가 필요 없다).
 
-2026-08-24에 로컬 Docker Prod-like 스택에서 둘 다 실행해 확인: 컨테이너 정지 → `503 LOGIN_UNAVAILABLE`
-(내부 정보 비노출) → 컨테이너 재기동 → Health `UP` → 로그인 요청 다시 `401`(정상 처리 재개)까지 PASS.
+2026-08-24에 로컬 Docker Prod-like 스택에서 둘 다 실행해 아래 순서로 PASS까지 확인했다:
+
+1. 컨테이너 정지
+2. `503 LOGIN_UNAVAILABLE`(내부 정보 비노출)
+3. 컨테이너 재기동
+4. Health `UP`
+5. 로그인 요청 다시 `401`(정상 처리 재개)
 
 ## ⚠️ 계정 Rate Limit Bucket 주의
 
@@ -176,7 +181,10 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다 — 아래 예시처럼 손으로 직접
 이어붙여 실행할 때만 다음 중 하나로 직접 대응해야 한다.
 
-- `auth-mandatory.js` → `session-flow.js` → `browser` 순서로 실행하되 각 사이 최소 5분 이상 간격을 둔다.
+- 아래 순서로 실행하되 각 사이 최소 5분 이상 간격을 둔다:
+  1. `auth-mandatory.js`
+  2. `session-flow.js`
+  3. `browser`
 - 반복 실행이 잦다면 dev 환경에서 `sample-store`/`owner` 전용으로 Rate Limit 용량을 늘리는 걸
   인프라팀에 요청한다(운영 계정에는 적용하지 않는다).
 - Client IP Bucket(기본 용량 30, 분당 6 보충)은 이 정도 호출량으로는 넉넉하므로 별도 조치 불필요.
