@@ -1345,22 +1345,15 @@ function findQueueRowByNumber(page: Page, queueNumber: number) {
   })
 }
 
-// register() 직후의 화면 반영 확인. 위 findQueueRowByNumber 주석에 적은 대로, 근본 원인이 타이밍이
-// 아니라 순수한 행 매칭 정규식 버그였음이 실측으로 확정됐다 — 서버 데이터는 등록 직후 항상 즉시
-// 정확했다. 그래서 register()가 이미 호출하는 즉시 1회 load(false)만으로 충분할 가능성이 높지만,
-// 이 세션은 여러 사람이 동시에 같은 실 배포를 쓰고 있어 네트워크 지연·서버 부하로 반영이 아주 짧게
-// 늦어질 여지는 남아 있다. 그 정도의 안전 여유만 남기고(최대 2회 재시도) 과거 두 차례에 걸쳐
-// 늘렸던 8회 "새로고침" 재시도는 과도했던 부분을 걷어냈다 — 완전히 없애면 이 문제가 다시 나타났을
-// 때 또 타이밍 탓으로 오진하게 만들 뿐이므로, 최소한의 여유는 의도적으로 남겨둔다. 만약 이 기본값을
-// 다시 늘려야 할 상황이 생긴다면, 그 전에 반드시 실측(진단 스크립트)으로 원인이 진짜 타이밍인지부터
-// 재확인할 것 — 이 파일의 행 매칭 자체는 더 이상 의심할 이유가 없다. EntryQueueView.vue의
-// "새로고침" 버튼은 search() → queue.load()를 호출하며 businessDate가 이미 채워져 있고 진행 중인
-// load()가 없는 한 항상 활성화 상태다.
+// 등록 직후에는 GET 응답이 아주 짧은 시간 동안 새 Entry를 반영하지 않을 수 있다.
+// 즉시 새로고침을 반복하지 않고 최소한의 반영 시간을 둔 뒤 재시도한다.
 async function waitForQueueRowViaRefresh(page: Page, queueNumber: number, maxAttempts = 2): Promise<boolean> {
   const row = findQueueRowByNumber(page, queueNumber)
+  const retryDelayMs = 500
   for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
     if (await row.isVisible().catch(() => false)) return true
     if (attempt === maxAttempts) break
+    await page.waitForTimeout(retryDelayMs)
     try {
       await Promise.all([
         page.waitForResponse(
