@@ -641,8 +641,17 @@ async function createOrderViaUi(page: Page): Promise<CreateOrderUiResult> {
     // submit() 성공 시 router.push({ name: 'pos-orders-detail', params: { orderId } })로 이동한다
     // (PosOrderCreateView.vue 확인 완료) — 이 이동 자체가 "주문이 성공적으로 생성됐다"는 화면상의
     // 실제 신호다.
-    await page.waitForURL(/\/pos\/orders\/[^/]+$/, { timeout: 10_000 }).catch(() => {})
-    orderId = new URL(page.url()).pathname.match(/\/pos\/orders\/([^/]+)$/)?.[1] ?? ''
+    //
+    // 주의: 시작 시점의 URL이 이미 /pos/orders/new이고, 이 경로 자체가 아래 정규식(세그먼트 하나)을
+    // 만족한다 — waitForURL(pattern)은 "현재 URL이 이미 패턴과 일치하면 즉시 resolve"하는 상태
+    // 확인이라(실제 Navigation을 기다리는 게 아님), "new"를 제외해두지 않으면 실제 주문 상세로
+    // Navigation이 일어나기 전에 곧바로 통과해버려 orderId에 실제 UUID 대신 문자열 "new"가 담긴다
+    // (실 배포 실측으로 확인된 결함 — 이 값이 그대로 cancelOrderViaUi에 넘어가면 존재하지 않는
+    // /api/v1/orders/new/cancel을 호출해 정리에 실패하고 실 테넌트에 주문/결제가 남는다).
+    await page.waitForURL(/\/pos\/orders\/(?!new$)[^/]+$/, { timeout: 10_000 }).catch(() => {})
+    const matchedOrderId = new URL(page.url()).pathname.match(/\/pos\/orders\/([^/]+)$/)?.[1] ?? ''
+    // 이중 방어 — 정규식이 어떤 이유로든 "new"를 다시 통과시키더라도 호출부에는 절대 넘기지 않는다.
+    orderId = matchedOrderId === 'new' ? '' : matchedOrderId
   }
   return { status, orderId, transportError, skipReason: null }
 }
