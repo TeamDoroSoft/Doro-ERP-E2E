@@ -622,8 +622,11 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
   }
 
   let pass = false
-  let staffBlockedPath = ''
-  let staffBlockedReason: string | null = null
+  let staffTablesPath = ''
+  let staffOperationsVisible = false
+  let staffTableRegistrationHidden = false
+  let staffProtectedPath = ''
+  let staffProtectedReason: string | null = null
   let ownerLogin: RoleLoginResult | null = null
   let managerLogin: RoleLoginResult | null = null
   let staffLogin: RoleLoginResult | null = null
@@ -637,13 +640,22 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
     if (managerLogin.status === 200 && managerLogin.finalPath === '/pos/orders') await logout(page)
 
     staffLogin = await loginAndCheckTablesMenu('AUTH_ROLE_STAFF_01', fixtures.staff)
-    // 메뉴에 없어도 직접 URL로 접근을 시도하면 router/index.ts의 Role Guard가
-    // /pos/orders?reason=forbidden으로 되돌려야 한다(§실제 구현 확인 완료).
+    // 최신 Front 정책(PR #34): STAFF도 테이블 세션·결제 인계 같은 운영 기능을 사용하므로
+    // /pos/tables 메뉴와 Route는 허용한다. 대신 등록·수정·이용 중지 같은 관리 기능은
+    // session.canManageTables로 숨기고, OWNER/MANAGER 전용 /pos/settings는 계속 차단해야 한다.
     if (staffLogin.status === 200 && staffLogin.finalPath === '/pos/orders') {
       await page.goto('/pos/tables')
-      const url = new URL(page.url())
-      staffBlockedPath = url.pathname
-      staffBlockedReason = url.searchParams.get('reason')
+      staffTablesPath = new URL(page.url()).pathname
+      staffOperationsVisible = await page.getByText('실시간 운영', { exact: true }).isVisible().catch(() => false)
+      staffTableRegistrationHidden = !(await page
+        .getByRole('button', { name: '테이블 등록' })
+        .isVisible()
+        .catch(() => false))
+
+      await page.goto('/pos/settings')
+      const protectedUrl = new URL(page.url())
+      staffProtectedPath = protectedUrl.pathname
+      staffProtectedReason = protectedUrl.searchParams.get('reason')
     }
 
     pass =
@@ -655,30 +667,44 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
       managerLogin.tablesMenuVisible === true &&
       staffLogin.status === 200 &&
       staffLogin.finalPath === '/pos/orders' &&
-      staffLogin.tablesMenuVisible === false &&
-      staffBlockedPath === '/pos/orders' &&
-      staffBlockedReason === 'forbidden'
+      staffLogin.tablesMenuVisible === true &&
+      staffTablesPath === '/pos/tables' &&
+      staffOperationsVisible &&
+      staffTableRegistrationHidden &&
+      staffProtectedPath === '/pos/orders' &&
+      staffProtectedReason === 'forbidden'
 
     record({
       testCaseId: 'FE-BE-014',
       startedAt,
       durationMs: Date.now() - t0,
       resultCode: pass ? 'PASS' : 'FAIL_UI',
-      expected: { httpStatus: 200, finalPath: '/pos/orders' },
-      observed: { httpStatus: staffLogin.status, finalPath: staffBlockedPath || staffLogin.finalPath },
+      expected: { httpStatus: 200, finalPath: '/pos/tables' },
+      observed: { httpStatus: staffLogin.status, finalPath: staffTablesPath || staffLogin.finalPath },
       assertions: {
         ownerLoginSucceeded: ownerLogin.status === 200 && ownerLogin.finalPath === '/pos/orders',
         ownerHasTablesMenu: ownerLogin.tablesMenuVisible === true,
         managerLoginSucceeded: managerLogin.status === 200 && managerLogin.finalPath === '/pos/orders',
         managerHasTablesMenu: managerLogin.tablesMenuVisible === true,
         staffLoginSucceeded: staffLogin.status === 200 && staffLogin.finalPath === '/pos/orders',
-        staffHasTablesMenuAbsent: staffLogin.tablesMenuVisible === false,
-        staffDirectAccessBlocked: staffBlockedPath === '/pos/orders' && staffBlockedReason === 'forbidden',
+        staffHasTablesMenu: staffLogin.tablesMenuVisible === true,
+        staffCanAccessTableOperations: staffTablesPath === '/pos/tables' && staffOperationsVisible,
+        staffTableRegistrationHidden,
+        staffManagerRouteBlocked: staffProtectedPath === '/pos/orders' && staffProtectedReason === 'forbidden',
       },
       browser: browserCounts(errors),
       errorClass: pass
         ? null
-        : JSON.stringify({ ownerLogin, managerLogin, staffLogin, staffBlockedPath, staffBlockedReason }),
+        : JSON.stringify({
+            ownerLogin,
+            managerLogin,
+            staffLogin,
+            staffTablesPath,
+            staffOperationsVisible,
+            staffTableRegistrationHidden,
+            staffProtectedPath,
+            staffProtectedReason,
+          }),
     })
   } catch (error) {
     record({
@@ -693,7 +719,10 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
 
   expect(
     pass,
-    `FE-BE-014 실패: owner=${JSON.stringify(ownerLogin)} manager=${JSON.stringify(managerLogin)} staff=${JSON.stringify(staffLogin)} staffBlockedPath="${staffBlockedPath}" staffBlockedReason="${staffBlockedReason}"`,
+    `FE-BE-014 실패: owner=${JSON.stringify(ownerLogin)} manager=${JSON.stringify(managerLogin)} ` +
+      `staff=${JSON.stringify(staffLogin)} staffTablesPath="${staffTablesPath}" ` +
+      `staffOperationsVisible=${staffOperationsVisible} staffTableRegistrationHidden=${staffTableRegistrationHidden} ` +
+      `staffProtectedPath="${staffProtectedPath}" staffProtectedReason="${staffProtectedReason}"`,
   ).toBe(true)
 })
 
