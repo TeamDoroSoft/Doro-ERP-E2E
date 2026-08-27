@@ -118,29 +118,62 @@ test('FE-BE-013 Network 차단 시 안전한 연결 실패 안내', async ({ pag
 // FE-BE-015: 승인 Redirect Fixture — 안전한 내부 경로만 이동, 외부 Redirect 차단
 // ---------------------------------------------------------------------------
 test('FE-BE-015 승인된 내부 경로로만 Redirect, 외부 Redirect 차단', async ({ page }) => {
+  // AUTH_VALID_01은 FE-BE-014의 OWNER 계정과 Rate Limit Bucket을 공유한다.
+  test.setTimeout(160_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
   const account = env.authValid01
+  const rateLimitRecoveryMs = 65_000
+
+  interface RedirectLoginResult {
+    status: number
+    finalPath: string
+    rateLimitRetried: boolean
+  }
+
+  async function loginWithRedirect(redirect: string): Promise<RedirectLoginResult> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await page.goto(`/pos/login?redirect=${encodeURIComponent(redirect)}`)
+      await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
+      const response = await submitAndWaitLogin(page)
+
+      await page
+        .waitForFunction(
+          () => {
+            const path = window.location.pathname
+            return path === '/pos/tables' || path === '/pos/orders' || path === '/pos/account/change-password'
+          },
+          undefined,
+          { timeout: 10_000 },
+        )
+        .catch(() => {})
+
+      const status = response.status()
+      const finalPath = new URL(page.url()).pathname
+      if (status === 429 && attempt === 0) {
+        await page.waitForTimeout(rateLimitRecoveryMs)
+        continue
+      }
+
+      return { status, finalPath, rateLimitRetried: attempt === 1 }
+    }
+
+    throw new Error('FE-BE-015 로그인 재시도 루프가 비정상적으로 종료되었습니다.')
+  }
 
   // 1) 안전한 내부 경로(/pos/tables — safePosReturnPath가 허용하는 형태)로는 실제로 이동해야 한다.
-  await page.goto('/pos/login?redirect=%2Fpos%2Ftables')
-  await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
-  const loginRes1 = await submitAndWaitLogin(page)
-  await page.waitForURL('**/pos/tables', { timeout: 10_000 }).catch(() => {})
-  const safePath = new URL(page.url()).pathname
-  const safeRedirectOk = loginRes1.status() === 200 && safePath === '/pos/tables'
+  const safeLogin = await loginWithRedirect('/pos/tables')
+  const safeRedirectOk = safeLogin.status === 200 && safeLogin.finalPath === '/pos/tables'
 
-  await logout(page)
+  // 로그인 실패(특히 429) 상태에서는 사용자 메뉴가 존재하지 않는다. 실패 원인을 로그아웃 Selector
+  // Timeout으로 덮어쓰지 않도록, 실제 로그인 성공일 때만 UI 로그아웃을 수행한다.
+  if (safeRedirectOk) await logout(page)
 
   // 2) 외부/승인되지 않은 Redirect는 무시하고 기본 경로(/pos/orders)로 가야 한다.
-  await page.goto('/pos/login?redirect=https%3A%2F%2Fevil.example.com%2Fsteal')
-  await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
-  const loginRes2 = await submitAndWaitLogin(page)
-  await page.waitForURL('**/pos/orders', { timeout: 10_000 }).catch(() => {})
-  const finalUrl = page.url()
+  const unsafeLogin = await loginWithRedirect('https://evil.example.com/steal')
   const unsafeRedirectBlocked =
-    loginRes2.status() === 200 && new URL(finalUrl).pathname === '/pos/orders' && !finalUrl.includes('evil.example.com')
+    unsafeLogin.status === 200 && unsafeLogin.finalPath === '/pos/orders'
 
   const pass = safeRedirectOk && unsafeRedirectBlocked
 
@@ -150,14 +183,22 @@ test('FE-BE-015 승인된 내부 경로로만 Redirect, 외부 Redirect 차단',
     durationMs: Date.now() - t0,
     accountAlias: 'AUTH_VALID_01',
     resultCode: pass ? 'PASS' : 'FAIL_UI',
-    expected: { finalPath: '/pos/tables' },
-    observed: { finalPath: safePath },
-    assertions: { safeRedirectFollowed: safeRedirectOk, unsafeRedirectBlocked },
+    expected: { httpStatus: 200, finalPath: '/pos/tables' },
+    observed: { httpStatus: safeLogin.status, finalPath: safeLogin.finalPath },
+    assertions: {
+      safeRedirectFollowed: safeRedirectOk,
+      unsafeRedirectBlocked,
+      safeLoginStatus200: safeLogin.status === 200,
+      unsafeLoginStatus200: unsafeLogin.status === 200,
+    },
     browser: browserCounts(errors),
-    errorClass: pass ? null : 'UI_REDIRECT_MISMATCH',
+    errorClass: pass ? null : JSON.stringify({ safeLogin, unsafeLogin }),
   })
 
-  expect(pass, `FE-BE-015 실패: safeRedirectOk=${safeRedirectOk} unsafeRedirectBlocked=${unsafeRedirectBlocked}`).toBe(true)
+  expect(
+    pass,
+    `FE-BE-015 실패: safe=${JSON.stringify(safeLogin)} unsafe=${JSON.stringify(unsafeLogin)}`,
+  ).toBe(true)
 })
 
 // ---------------------------------------------------------------------------
