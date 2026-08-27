@@ -95,7 +95,13 @@ const TLS_CERT_ERROR_CODES = new Set([
 ])
 
 function isTlsCertErrorCode(code) {
-  if (!code) return false
+  // 사설 IP라 연결이 아예 안 될 때(정상적으로 차단된 경우) fetchWithTimeout의
+  // AbortController가 타임아웃으로 요청을 끊는데, 이때 Node/undici가 던지는 DOMException
+  // AbortError의 `.code`는 문자열이 아니라 숫자 20(DOMException.ABORT_ERR)이다(실측 확인 —
+  // `error.cause`가 없고 `error.code === 20`). 이 경우를 문자열로 가정해 `.startsWith`를
+  // 부르면 "code.startsWith is not a function"으로 크래시해서, 가장 흔하게 나와야 할 "정상
+  // 차단됨" 케이스를 오히려 실행 자체가 죽어버리는 결과로 바꿔놓는다.
+  if (typeof code !== 'string') return false
   // ERR_TLS_* (예: ERR_TLS_CERT_ALTNAME_INVALID)는 Node 자체의 TLS 에러 코드 네임스페이스라
   // 전부 인증서/핸드셰이크 관련으로 간주한다. 나머지는 흔한 OpenSSL 코드 목록으로 매칭한다.
   return code.startsWith('ERR_TLS_') || TLS_CERT_ERROR_CODES.has(code)
