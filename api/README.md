@@ -16,7 +16,7 @@ export DORO_API_ORIGIN=https://doro.minseok.click
 export DORO_AUTH_VALID_01_TENANT_CODE=sample-store
 export DORO_AUTH_VALID_01_LOGIN_ID=owner
 export DORO_AUTH_VALID_01_PASSWORD=***   # 로컬 Secret Store/CI Secret에서만 주입, 커밋 금지
-export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # 다른 스크립트/러너와 같은 runId를 쓰게 하려면 직접 고정
+export DORO_RUN_ID=run-$(TZ='Asia/Seoul' date +%Y-%m-%d_%H-%M-%S)   # 다른 스크립트/러너와 같은 runId를 쓰게 하려면 직접 고정
 
 k6 run --log-format=raw api/scenarios/auth-mandatory.js > /tmp/auth-mandatory.log 2>&1
 node api/lib/build-report.mjs /tmp/auth-mandatory.log AUTH-mandatory \

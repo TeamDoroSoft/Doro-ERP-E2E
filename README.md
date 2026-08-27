@@ -300,7 +300,7 @@ browser와 api 결과를 나중에 `build-combined-summary.mjs`로 묶으려면 
 지정해서 실행해야 한다(안 주면 각자 자동 생성한 다른 runId를 써서 서로 못 찾는다).
 
 ```bash
-export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # 세 실행이 전부 이 값을 쓴다
+export DORO_RUN_ID=run-$(TZ='Asia/Seoul' date +%Y-%m-%d_%H-%M-%S)   # 세 실행이 전부 이 값을 쓴다
 
 # 1) browser/ 와 api/ 에서 각각 실제 값을 채운 .env 를 준비한다 (또는 셸 export)
 # 2) Playwright 배포 E2E
@@ -444,7 +444,7 @@ Container를 직접 때리므로 `DORO_API_ORIGIN`은 그대로 HTTPS이고, 자
 `--insecure-skip-tls-verify`가 추가로 필요하다(실제 dev/stage/prod에는 절대 쓰지 않음).
 
 ```bash
-export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # browser/api 세 실행 전부 이 값을 쓴다
+export DORO_RUN_ID=run-$(TZ='Asia/Seoul' date +%Y-%m-%d_%H-%M-%S)   # browser/api 세 실행 전부 이 값을 쓴다
 
 # 위 스크립트가 만든 .env.local-rehearsal.local을 불러온다
 set -a; source .env.local-rehearsal.local; set +a
