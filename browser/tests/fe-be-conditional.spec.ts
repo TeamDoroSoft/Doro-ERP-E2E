@@ -92,7 +92,10 @@ test('FE-BE-013 Network 차단 시 안전한 연결 실패 안내', async ({ pag
   await errorLocator.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
   const errorText = (await errorLocator.textContent().catch(() => null))?.trim() ?? null
   const stillOnLogin = new URL(page.url()).pathname === '/pos/login'
-  const expectedMessage = '인증 서버에 연결할 수 없습니다.'
+  // 실측 확인(2026-08-27): 프론트(Doro-ERP-Front/src/views/LoginView.vue의 NETWORK_ERROR 분기)의
+  // 실제 문구가 이걸로 바뀌어 있었다 — 옛 기대값("인증 서버에 연결할 수 없습니다.")은 테스트가
+  // UI 변경을 못 따라간 것이었다(애플리케이션 쪽 결함이 아님, 직접 소스 대조로 확인 완료).
+  const expectedMessage = '로그인할 수 없습니다. 연결 상태를 확인해 주세요.'
   const pass = stillOnLogin && errorText === expectedMessage
 
   record({
