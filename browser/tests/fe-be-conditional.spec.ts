@@ -1211,16 +1211,44 @@ async function registerEntryViaUi(page: Page, businessDate: string, partySize: n
   return { status, entryId, queueNumber, transportError }
 }
 
-// register() 직후의 즉시 1회 load(false)와 그 뒤 useBoundedPolling(5초 간격 최대 3회, 최대 15초
-// 추가)에 기대는 대신, 테스트가 "새로고침" 버튼을 능동적으로 최대 maxAttempts회 눌러가며 매회
-// GET /api/v1/queues/entry 응답을 확인하는 Retry Loop. 실 배포 Trace 분석 결과 등록한 Entry는
-// POST 직후 GET 응답 Body에 항상 정확히 존재했다(WAITING 상태까지 일치) — 즉 서버 데이터는
-// 문제없고, 화면에 반영되는 시점만 앱 내부 Polling 타이밍(최대 15초+α, 정확한 서버쪽 지연 원인은
-// 이 저장소 범위 밖)보다 늦을 수 있었다. Timeout을 더 늘리는 대신 명시적 재확인으로 전환해 앱의
-// 내부 타이밍에 의존하지 않도록 한다. EntryQueueView.vue의 "새로고침" 버튼은 search() → queue.load()
-// 를 호출하며 businessDate가 이미 채워져 있고 진행 중인 load()가 없는 한 항상 활성화 상태다.
-async function waitForQueueRowViaRefresh(page: Page, queueNumber: number, maxAttempts = 8): Promise<boolean> {
-  const row = page.locator('table tbody tr').filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
+// 행 매칭 정규식 버그의 근본 원인(2026-08-27 실 배포 대상 진단 스크립트로 확정 — 반박 불가능한
+// 실측): 과거에는 `table tbody tr`을 hasText 정규식(`#${queueNumber}(?!\d)`)으로 필터링했다.
+// Playwright의 hasText는 그 tr **전체의 concatenated text content**를 대상으로 매칭하는데,
+// EntryQueueView.vue의 `<td><strong>#{{ entry.queueNumber }}</strong></td><td>{{ entry.partySize
+// }}명</td>`가 같은 행 안에서 공백 없이 바로 이어 붙어, 예를 들어 queueNumber=9·partySize=2인 행의
+// 실제 텍스트는 "#9" + "2명..." = "#92명..."이 된다. 그래서 `#9(?!\d)`는 "#9" 바로 뒤에 오는 문자가
+// partySize의 숫자("2")라는 이유로 "#9"가 "#92"의 일부일 수 있다고 오판해 매번 매칭을 거부했다 —
+// partySize는 항상 숫자로 시작하므로(인원수는 언제나 숫자), queueNumber가 몇이든 이 정규식은
+// **원천적으로 절대 매칭에 성공할 수 없는 버그**였다.
+//
+// 진단 스크립트로 직접 확인한 결과: POST /api/v1/queues/entry로 만든 Entry는 매번 즉시 GET 응답에
+// 정확히 포함돼 있었고(WAITING 상태까지 일치, rowCount도 즉시 정확), 10번 연속 확인해도 매번
+// 데이터는 처음부터 끝까지 정확한데 유일하게 실패한 건 이 정규식으로 행을 "찾는" 것 자체였다. 즉
+// 지금까지 이 파일에 있던 모든 대기 시간/재시도 로직(늘려온 Timeout들, 아래 8회 재시도)은 이 버그를
+// 전혀 해결하지 못했고 애초에 문제 자체가 아니었다 — 순수한 정규식 매칭 버그였다.
+//
+// 고친 방식: 행 전체의 concatenated text가 아니라 queueNumber가 표시되는 `<strong>` 요소 하나만
+// Exact 매칭 대상으로 삼는다. "#9"와 "#92"는 문자열 자체가 다르므로 exact:true 매칭에서 서로 절대
+// 혼동되지 않는다 — 부정 Lookahead 정규식이 아예 필요 없다.
+function findQueueRowByNumber(page: Page, queueNumber: number) {
+  return page.locator('table tbody tr').filter({
+    has: page.getByText(`#${queueNumber}`, { exact: true }),
+  })
+}
+
+// register() 직후의 화면 반영 확인. 위 findQueueRowByNumber 주석에 적은 대로, 근본 원인이 타이밍이
+// 아니라 순수한 행 매칭 정규식 버그였음이 실측으로 확정됐다 — 서버 데이터는 등록 직후 항상 즉시
+// 정확했다. 그래서 register()가 이미 호출하는 즉시 1회 load(false)만으로 충분할 가능성이 높지만,
+// 이 세션은 여러 사람이 동시에 같은 실 배포를 쓰고 있어 네트워크 지연·서버 부하로 반영이 아주 짧게
+// 늦어질 여지는 남아 있다. 그 정도의 안전 여유만 남기고(최대 2회 재시도) 과거 두 차례에 걸쳐
+// 늘렸던 8회 "새로고침" 재시도는 과도했던 부분을 걷어냈다 — 완전히 없애면 이 문제가 다시 나타났을
+// 때 또 타이밍 탓으로 오진하게 만들 뿐이므로, 최소한의 여유는 의도적으로 남겨둔다. 만약 이 기본값을
+// 다시 늘려야 할 상황이 생긴다면, 그 전에 반드시 실측(진단 스크립트)으로 원인이 진짜 타이밍인지부터
+// 재확인할 것 — 이 파일의 행 매칭 자체는 더 이상 의심할 이유가 없다. EntryQueueView.vue의
+// "새로고침" 버튼은 search() → queue.load()를 호출하며 businessDate가 이미 채워져 있고 진행 중인
+// load()가 없는 한 항상 활성화 상태다.
+async function waitForQueueRowViaRefresh(page: Page, queueNumber: number, maxAttempts = 2): Promise<boolean> {
+  const row = findQueueRowByNumber(page, queueNumber)
   for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
     if (await row.isVisible().catch(() => false)) return true
     if (attempt === maxAttempts) break
@@ -1243,12 +1271,12 @@ async function waitForQueueRowViaRefresh(page: Page, queueNumber: number, maxAtt
 // 방금 만든 행("#{queueNumber}")을 찾아 그 행의 "취소" 버튼을 누른다. act('cancel')도 Route 이동
 // 없이 같은 화면에서 load(false)로 갱신한다 — OrderDetailPanel의 "주문 취소"와 달리 이 화면은
 // window.confirm()을 띄우지 않는다(EntryQueueView.vue 템플릿에 confirm 호출이 없음, 확인 완료).
-// queueNumber를 문자열로 그대로 매칭하면 "#3"이 "#30"에도 부분 일치할 수 있어 뒤에 숫자가 더
-// 이어지지 않는 경우만 매칭하도록 정규식을 쓴다. 행이 아직 안 보이면(registerEntryViaUi의
-// rowVisible 확인이 실패해 여기로 온 경우 포함) waitForQueueRowViaRefresh로 한 번 더 명시적
-// 재시도한다.
+// 행 매칭은 findQueueRowByNumber를 그대로 재사용한다(위 주석의 정규식 매칭 버그 설명 참고 —
+// "#9"가 "#92"의 일부로 오판되던 문제는 <strong> 요소 Exact 매칭으로 이미 해결됐다). 행이 아직
+// 안 보이면(registerEntryViaUi의 rowVisible 확인이 실패해 여기로 온 경우 포함)
+// waitForQueueRowViaRefresh로 한 번 더 명시적 재시도한다.
 async function cancelEntryRowViaUi(page: Page, entryId: string, queueNumber: number): Promise<number> {
-  const row = page.locator('table tbody tr').filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
+  const row = findQueueRowByNumber(page, queueNumber)
   const visible = await waitForQueueRowViaRefresh(page, queueNumber)
   if (!visible) {
     throw new Error(`행(#${queueNumber})이 "새로고침" 재시도 후에도 화면에 보이지 않습니다`)
@@ -1293,10 +1321,12 @@ test('FE-BE-023 화면에서 입장 대기 등록 → 취소', async ({ page }) 
   // (순전한 UI 렌더링 확인)과는 독립시킨다. FE-BE-020이 겪은 것과 같은 이유로, 화면 확인이
   // 타이밍 문제로 실패해도 서버에는 이미 WAITING Entry가 생겼을 수 있어 정리는 반드시 시도해야 한다.
   const shouldAttemptCleanup = status === 201 && entryId !== ''
-  // Trace 분석 결과(위 registerEntryViaUi 주석 참고) register() 직후의 즉시 1회 load(false)와
-  // 그 뒤 useBoundedPolling(최대 15초)만으로는 반영 시점을 안정적으로 못 잡는 경우가 있었다.
-  // Timeout을 계속 늘리는 대신 waitForQueueRowViaRefresh로 "새로고침"을 최대 8회 능동적으로
-  // 눌러가며 매회 GET 응답을 직접 확인한다 — 앱 내부 폴링 타이밍에 기대지 않는다.
+  // 실 배포 대상 진단 스크립트로 확정(위 findQueueRowByNumber 주석 참고): register() 직후 GET
+  // 응답에 Entry는 항상 즉시 정확히 포함돼 있었다 — 반영이 안 되는 것처럼 보였던 진짜 원인은 앱의
+  // 폴링 타이밍이 아니라 행을 찾는 정규식 자체의 매칭 버그였다. 그 버그를 고쳤으므로
+  // waitForQueueRowViaRefresh의 재시도 횟수도 과도했던 8회에서 최소한의 안전 여유(최대 2회)로
+  // 줄였다 — 여러 세션이 동시에 같은 실 배포를 쓰는 상황의 네트워크 지연/서버 부하 정도만 흡수하면
+  // 충분하다.
   const rowVisible =
     shouldAttemptCleanup && queueNumber !== null ? await waitForQueueRowViaRefresh(page, queueNumber) : false
   const registered = status === 201 && entryId !== '' && rowVisible
