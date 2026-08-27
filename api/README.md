@@ -19,7 +19,7 @@ export DORO_AUTH_VALID_01_PASSWORD=***   # 로컬 Secret Store/CI Secret에서�
 export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # 다른 스크립트/러너와 같은 runId를 쓰게 하려면 직접 고정
 
 k6 run --log-format=raw api/scenarios/auth-mandatory.js > /tmp/auth-mandatory.log 2>&1
-node api/lib/build-report.mjs /tmp/auth-mandatory.log auth-mandatory \
+node api/lib/build-report.mjs /tmp/auth-mandatory.log AUTH-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
 # SESS-004/005까지 돌리려면 전용 정적 계정도 필요(없으면 그 둘만 SKIP_PRECONDITION, 나머지는 그대로 실행)
@@ -27,7 +27,7 @@ export DORO_AUTH_TEMP_PASSWORD_01_TENANT_CODE=... DORO_AUTH_TEMP_PASSWORD_01_LOG
 export DORO_AUTH_PASSWORD_ROTATE_01_TENANT_CODE=... DORO_AUTH_PASSWORD_ROTATE_01_LOGIN_ID=...
 export DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_A=... DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_B=...
 k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/session-flow.log SESS SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 ```
 
 로컬 Docker Prod-like 리허설(자체 서명 TLS)을 대상으로 할 때만 `--insecure-skip-tls-verify`를 추가한다
@@ -66,7 +66,7 @@ DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
 DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/auth-lockout-ratelimit.js > /tmp/lockout.log 2>&1
-node api/lib/build-report.mjs /tmp/lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033,AUTH-034
+node api/lib/build-report.mjs /tmp/lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033,AUTH-034
 ```
 
 - `AUTH-030`/`031`(5회 실패 계정 잠금)은 전용 정적 계정 `AUTH_LOCKOUT_01`을 쓴다(멱등 — 이미
@@ -109,7 +109,7 @@ DORO_AUTH_INACTIVE_TENANT_01_TENANT_CODE=... DORO_AUTH_INACTIVE_TENANT_01_LOGIN_
 DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
   k6 run --log-format=raw api/scenarios/auth-account-nonexposure.js > /tmp/nonexposure.log 2>&1
-node api/lib/build-report.mjs /tmp/nonexposure.log auth-account-nonexposure AUTH-011,AUTH-012,AUTH-013,AUTH-014,AUTH-015
+node api/lib/build-report.mjs /tmp/nonexposure.log AUTH-nonexposure AUTH-011,AUTH-012,AUTH-013,AUTH-014,AUTH-015
 ```
 
 케이스별 전제조건이 다르다:
@@ -150,13 +150,13 @@ node api/lib/build-report.mjs /tmp/nonexposure.log auth-account-nonexposure AUTH
 DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/queue-connectivity.js > /tmp/queue-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUEUE-001,QUEUE-002
+node api/lib/build-report.mjs /tmp/queue-connectivity.log QUEUE QUEUE-001,QUEUE-002
 
 # QUEUE-003(상태 변경)까지 실행하려면 플래그를 추가로 켠다
 RUN_DESTRUCTIVE_QUEUE_TESTS=true DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... \
 DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/queue-connectivity.js > /tmp/queue-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUEUE-001,QUEUE-002,QUEUE-003
+node api/lib/build-report.mjs /tmp/queue-connectivity.log QUEUE QUEUE-001,QUEUE-002,QUEUE-003
 ```
 
 - `QUEUE-001`(`GET /api/v1/queues/fulfillment`)·`QUEUE-002`(`GET /api/v1/queues/entry?businessDate=<오늘>`)는
@@ -187,14 +187,14 @@ node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUE
 DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/catalog-connectivity.js > /tmp/catalog-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity CATALOG-001,CATALOG-002,CATALOG-003
+node api/lib/build-report.mjs /tmp/catalog-connectivity.log CATALOG CATALOG-001,CATALOG-002,CATALOG-003
 
 # CATALOG-004~006(Category·Product 생성·수정·품절 전환)까지 실행하려면 플래그와 AUTH_ROLE_OWNER_01을 추가로 준다
 RUN_DESTRUCTIVE_CATALOG_TESTS=true DORO_API_ORIGIN=... \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
 DORO_AUTH_ROLE_OWNER_01_TENANT_CODE=... DORO_AUTH_ROLE_OWNER_01_LOGIN_ID=... DORO_AUTH_ROLE_OWNER_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/catalog-connectivity.js > /tmp/catalog-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity \
+node api/lib/build-report.mjs /tmp/catalog-connectivity.log CATALOG \
   CATALOG-001,CATALOG-002,CATALOG-003,CATALOG-004,CATALOG-005,CATALOG-006
 ```
 
@@ -250,7 +250,7 @@ node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity
 DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/audit-sales-connectivity.js > /tmp/audit-sales-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/audit-sales-connectivity.log audit-sales-connectivity AUDIT-001,SALES-001
+node api/lib/build-report.mjs /tmp/audit-sales-connectivity.log AUDIT-SALES AUDIT-001,SALES-001
 ```
 
 - `AUDIT-001`(`GET /api/v1/audits`)은 `EdgeAuditController.java`(edge-api)가 `from`/`to`를 optional

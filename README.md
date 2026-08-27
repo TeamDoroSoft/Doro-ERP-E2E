@@ -313,7 +313,7 @@ cd ..
 DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... \
 DORO_AUTH_VALID_01_PASSWORD=... k6 run --log-format=raw api/scenarios/auth-mandatory.js \
   > /tmp/k6-auth-mandatory.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
+node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log AUTH-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
 # 4) k6 세션 흐름 — SESS-004/005까지 돌리려면 AUTH_TEMP_PASSWORD_01/AUTH_PASSWORD_ROTATE_01
@@ -324,7 +324,7 @@ DORO_AUTH_TEMP_PASSWORD_01_TENANT_CODE=... DORO_AUTH_TEMP_PASSWORD_01_LOGIN_ID=.
 DORO_AUTH_PASSWORD_ROTATE_01_TENANT_CODE=... DORO_AUTH_PASSWORD_ROTATE_01_LOGIN_ID=... \
 DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_A=... DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_B=... \
   k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log SESS SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
 # 5) 세 결과를 하나의 판정으로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
@@ -457,7 +457,7 @@ cd ..
 DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-mandatory.js \
   > /tmp/k6-auth-mandatory.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
+node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log AUTH-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
 # SESS-004/005는 정적 계정(AUTH_TEMP_PASSWORD_01/AUTH_PASSWORD_ROTATE_01) 전용이라 로컬
@@ -465,7 +465,7 @@ node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
 DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/session-flow.js \
   > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log SESS SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
 # 세 결과를 하나로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
@@ -494,7 +494,7 @@ DORO_API_ORIGIN=https://localhost:8080 \
 DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-lockout-ratelimit.js \
   > /tmp/k6-lockout.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033,AUTH-034
+node api/lib/build-report.mjs /tmp/k6-lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033,AUTH-034
 
 # OPS-001/003 — Store Access·Redis 컨테이너를 실제로 멈췄다 올린다 (--confirm 없이는 아무것도 안 함)
 node scripts/run-fault-injection.mjs OPS-001 --confirm
