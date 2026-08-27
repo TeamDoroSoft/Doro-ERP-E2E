@@ -182,6 +182,18 @@ export async function runFullGate() {
     )
   }
 
+  if (
+    process.env.RUN_DESTRUCTIVE_AUTH_TESTS === 'true' &&
+    !isLocalRehearsal &&
+    process.env.RUN_FAULT_INJECTION_TESTS === 'true'
+  ) {
+    console.log(
+      '  ⏳ AUTH-034(방금 실행됨)가 Client-IP Rate Limit Bucket을 소진시켰습니다 — ' +
+        'OPS-002의 사전 401 판정이 429로 오염되지 않도록 완전히 보충되는 5분 동안 대기합니다.',
+    )
+    await new Promise((r) => setTimeout(r, 5 * 60 * 1000))
+  }
+
   steps.push(
     await runStep('OPS-002 (실 배포 EKS Provider 미승인 응답, 미검증)', () => {
       if (isLocalRehearsal) {

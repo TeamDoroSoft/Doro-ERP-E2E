@@ -380,7 +380,8 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
   // HPA 삭제와 Deployment 원복을 한데 묶은 최선 노력(Best-effort) 복구 — 두 단계 중
   // 하나가 실패해도 나머지는 계속 시도한다(둘 다 시도하지 않으면 Deployment가 0에
   // 머물거나 HPA가 없는 채로 남을 수 있다).
-  function restoreNonLocal(): void {
+  function restoreNonLocal(): boolean {
+    let hpaRestored = true
     if (originalReplicas !== null) {
       try {
         kubectl(['scale', 'deployment', K8S_DEPLOYMENT, '-n', K8S_NAMESPACE, `--replicas=${originalReplicas}`])
@@ -395,12 +396,14 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
       try {
         restoreHpa(hpaSpec)
       } catch (err) {
+        hpaRestored = false
         console.error(
           `⚠ ${K8S_NAMESPACE}/${K8S_HPA} HPA를 재생성하지 못했습니다 — 수동 확인 필요: ` +
             (err instanceof Error ? err.message : String(err)),
         )
       }
     }
+    return hpaRestored
   }
 
   if (IS_LOCAL) {
@@ -425,6 +428,13 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
     }
   }
 
+  let status = 0
+  let errorText: string | null = null
+  let requestId = ''
+  let uiPass = false
+  let hpaRestored = true
+  const expectedMessage = '직원 로그인 서비스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.'
+
   try {
     await page.goto('/pos/login')
     await fillLoginForm(page, 'e2e-fe-be-012-probe', 'probe', 'probe-Password-0012')
@@ -432,31 +442,16 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
 
     const errorLocator = page.locator('.form-error[role="alert"]')
     await errorLocator.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
-    const errorText = (await errorLocator.textContent().catch(() => null))?.trim() ?? null
-    const expectedMessage = '직원 로그인 서비스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.'
-    const status = res.status()
-    const pass = status === 503 && errorText === expectedMessage
-
-    record({
-      testCaseId: 'FE-BE-012',
-      startedAt,
-      durationMs: Date.now() - t0,
-      resultCode: pass ? 'PASS' : 'FAIL_UI',
-      expected: { httpStatus: 503 },
-      observed: { httpStatus: status },
-      requestId: res.headers()['x-request-id'] ?? '',
-      assertions: { status503: status === 503, safeMessageShown: errorText === expectedMessage },
-      browser: browserCounts(errors),
-      errorClass: pass ? null : 'UI_ERROR_MESSAGE_MISMATCH',
-    })
-
-    expect(pass, `FE-BE-012 실패: status=${status} errorText="${errorText}"`).toBe(true)
+    errorText = (await errorLocator.textContent().catch(() => null))?.trim() ?? null
+    status = res.status()
+    requestId = res.headers()['x-request-id'] ?? ''
+    uiPass = status === 503 && errorText === expectedMessage
   } finally {
     if (IS_LOCAL) {
       execFileSync('docker', ['start', STORE_ACCESS_CONTAINER])
       await waitForStoreAccessHealthy()
     } else {
-      restoreNonLocal()
+      hpaRestored = restoreNonLocal()
       const recovered = await waitForReadyReplicas(Number(originalReplicas))
       if (!recovered) {
         throw new Error(
@@ -465,6 +460,22 @@ test('FE-BE-012 Provider 장애 시 안전한 서비스 불가 안내', async ({
       }
     }
   }
+
+  const pass = uiPass && hpaRestored
+  record({
+    testCaseId: 'FE-BE-012',
+    startedAt,
+    durationMs: Date.now() - t0,
+    resultCode: pass ? 'PASS' : hpaRestored ? 'FAIL_UI' : 'FAIL_ASSERTION',
+    expected: { httpStatus: 503 },
+    observed: { httpStatus: status },
+    requestId,
+    assertions: { status503: status === 503, safeMessageShown: errorText === expectedMessage, hpaRestored },
+    browser: browserCounts(errors),
+    errorClass: pass ? null : hpaRestored ? 'UI_ERROR_MESSAGE_MISMATCH' : 'HPA_RESTORE_FAILED',
+  })
+
+  expect(pass, `FE-BE-012 실패: status=${status} errorText="${errorText}" hpaRestored=${hpaRestored}`).toBe(true)
 })
 
 // ---------------------------------------------------------------------------
