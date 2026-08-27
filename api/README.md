@@ -16,10 +16,10 @@ export DORO_API_ORIGIN=https://doro.minseok.click
 export DORO_AUTH_VALID_01_TENANT_CODE=sample-store
 export DORO_AUTH_VALID_01_LOGIN_ID=owner
 export DORO_AUTH_VALID_01_PASSWORD=***   # 로컬 Secret Store/CI Secret에서만 주입, 커밋 금지
-export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # 다른 스크립트/러너와 같은 runId를 쓰게 하려면 직접 고정
+export DORO_RUN_ID=run-$(TZ='Asia/Seoul' date +%Y-%m-%d_%H-%M-%S)   # 다른 스크립트/러너와 같은 runId를 쓰게 하려면 직접 고정
 
 k6 run --log-format=raw api/scenarios/auth-mandatory.js > /tmp/auth-mandatory.log 2>&1
-node api/lib/build-report.mjs /tmp/auth-mandatory.log auth-mandatory \
+node api/lib/build-report.mjs /tmp/auth-mandatory.log AUTH-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
 # SESS-004/005까지 돌리려면 전용 정적 계정도 필요(없으면 그 둘만 SKIP_PRECONDITION, 나머지는 그대로 실행)
@@ -27,7 +27,7 @@ export DORO_AUTH_TEMP_PASSWORD_01_TENANT_CODE=... DORO_AUTH_TEMP_PASSWORD_01_LOG
 export DORO_AUTH_PASSWORD_ROTATE_01_TENANT_CODE=... DORO_AUTH_PASSWORD_ROTATE_01_LOGIN_ID=...
 export DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_A=... DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_B=...
 k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/session-flow.log SESS SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 ```
 
 로컬 Docker Prod-like 리허설(자체 서명 TLS)을 대상으로 할 때만 `--insecure-skip-tls-verify`를 추가한다
@@ -79,7 +79,7 @@ DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
 DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/auth-lockout-ratelimit.js > /tmp/lockout.log 2>&1
-node api/lib/build-report.mjs /tmp/lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033,AUTH-034
+node api/lib/build-report.mjs /tmp/lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033,AUTH-034
 ```
 
 - `AUTH-030`/`031`(5회 실패 계정 잠금)은 전용 정적 계정 `AUTH_LOCKOUT_01`을 쓴다(멱등 — 이미
@@ -122,7 +122,7 @@ DORO_AUTH_INACTIVE_TENANT_01_TENANT_CODE=... DORO_AUTH_INACTIVE_TENANT_01_LOGIN_
 DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
   k6 run --log-format=raw api/scenarios/auth-account-nonexposure.js > /tmp/nonexposure.log 2>&1
-node api/lib/build-report.mjs /tmp/nonexposure.log auth-account-nonexposure AUTH-011,AUTH-012,AUTH-013,AUTH-014,AUTH-015
+node api/lib/build-report.mjs /tmp/nonexposure.log AUTH-nonexposure AUTH-011,AUTH-012,AUTH-013,AUTH-014,AUTH-015
 ```
 
 케이스별 전제조건이 다르다:
@@ -163,13 +163,13 @@ node api/lib/build-report.mjs /tmp/nonexposure.log auth-account-nonexposure AUTH
 DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/queue-connectivity.js > /tmp/queue-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUEUE-001,QUEUE-002
+node api/lib/build-report.mjs /tmp/queue-connectivity.log QUEUE QUEUE-001,QUEUE-002
 
 # QUEUE-003(상태 변경)까지 실행하려면 플래그를 추가로 켠다
 RUN_DESTRUCTIVE_QUEUE_TESTS=true DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... \
 DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/queue-connectivity.js > /tmp/queue-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUEUE-001,QUEUE-002,QUEUE-003
+node api/lib/build-report.mjs /tmp/queue-connectivity.log QUEUE QUEUE-001,QUEUE-002,QUEUE-003
 ```
 
 - `QUEUE-001`(`GET /api/v1/queues/fulfillment`)·`QUEUE-002`(`GET /api/v1/queues/entry?businessDate=<오늘>`)는
@@ -200,14 +200,14 @@ node api/lib/build-report.mjs /tmp/queue-connectivity.log queue-connectivity QUE
 DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/catalog-connectivity.js > /tmp/catalog-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity CATALOG-001,CATALOG-002,CATALOG-003
+node api/lib/build-report.mjs /tmp/catalog-connectivity.log CATALOG CATALOG-001,CATALOG-002,CATALOG-003
 
 # CATALOG-004~006(Category·Product 생성·수정·품절 전환)까지 실행하려면 플래그와 AUTH_ROLE_OWNER_01을 추가로 준다
 RUN_DESTRUCTIVE_CATALOG_TESTS=true DORO_API_ORIGIN=... \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
 DORO_AUTH_ROLE_OWNER_01_TENANT_CODE=... DORO_AUTH_ROLE_OWNER_01_LOGIN_ID=... DORO_AUTH_ROLE_OWNER_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/catalog-connectivity.js > /tmp/catalog-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity \
+node api/lib/build-report.mjs /tmp/catalog-connectivity.log CATALOG \
   CATALOG-001,CATALOG-002,CATALOG-003,CATALOG-004,CATALOG-005,CATALOG-006
 ```
 
@@ -263,7 +263,7 @@ node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity
 DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/audit-sales-connectivity.js > /tmp/audit-sales-connectivity.log 2>&1
-node api/lib/build-report.mjs /tmp/audit-sales-connectivity.log audit-sales-connectivity AUDIT-001,SALES-001
+node api/lib/build-report.mjs /tmp/audit-sales-connectivity.log AUDIT-SALES AUDIT-001,SALES-001
 ```
 
 - `AUDIT-001`(`GET /api/v1/audits`)은 `EdgeAuditController.java`(edge-api)가 `from`/`to`를 optional
@@ -314,7 +314,7 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 `--confirm` 없이 실행하면 아무 컨테이너도 건드리지 않고 사용법만 출력하고 끝난다(배포 Frontend–Backend
 종단 검증.md §6의 "장애 주입은 전용 Stage 또는 승인된 점검 시간에 운영 담당자가 수행" 안전장치를 로컬
 스크립트 차원에서 흉내낸 것). 컨테이너를 멈춘 뒤에는 무슨 일이
-있어도(예외 발생 포함) `finally`에서 다시 올리는 것을 보장한다. 결과는 `reports/<runId>.ops-00N.results.jsonl`에
+있어도(예외 발생 포함) `finally`에서 다시 올리는 것을 보장한다. 결과는 `reports/<runId>/ops-00N.results.jsonl`에
 쌓인다(`build-report.mjs`를 거치지 않고 스크립트가 직접 씀 — 케이스가 하나뿐이라 후처리가 필요 없다).
 
 2026-08-24에 로컬 Docker Prod-like 스택에서 둘 다 실행해 확인: 컨테이너 정지 → `503 LOGIN_UNAVAILABLE`
@@ -370,17 +370,21 @@ core k6 API가 없어서, `record()`는 케이스마다 `console.log(JSON.string
 `2>&1`로 두 스트림을 합쳐서 파일로 받는 이유가 이것이다. 저장소 루트의 오케스트레이터
 (`scripts/run-mandatory-gate.mjs` 등)는 이 스트림 문제를 피하려고 `--console-output=<파일>`로
 k6가 그 줄들을 직접 파일에 쓰게 한다. 어느 경로든 `api/lib/build-report.mjs`(평범한 Node
-스크립트)가 그 파일을 후처리해서 `reports/<runId>.<suite>.{results.jsonl,summary.json,junit.xml}`을
-만든다.
+스크립트)가 그 파일을 후처리해서 `reports/<runId>/<suite>.{results.jsonl,summary.json,junit.xml}`을
+만든다 — browser가 쓰는 `reports/<runId>/results.jsonl`과 같은 `reports/<runId>/` 폴더 아래다.
 
-같은 이유로 파일명은 `reports/<runId>/results.jsonl`처럼 하위 디렉터리를 쓰지 않고
-`reports/<runId>.<suite>.results.jsonl`처럼 `reports/` 바로 아래 평평하다 — k6 코어 JS에는 mkdir
-API가 없어서 없는 하위 디렉터리를 handleSummary 반환값으로 가리키면 조용히 쓰기 실패만 하기 때문이다
-(이것도 로컬 리허설에서 실제 재현·확인). Node 쪽(`build-report.mjs`)은 `fs`가 있어 문제없다.
+k6 코어 JS 자체에는 mkdir API가 없어서, 없는 하위 디렉터리를 `--console-output`이나 handleSummary
+반환값으로 직접 가리키면 조용히 쓰기 실패만 한다(로컬 리허설에서 실제 재현·확인) — 그래서 이
+저장소는 k6를 실행하기 전에 Node(`scripts/lib/gate-steps.mjs`의 `runK6Scenario()`)가 먼저
+`reports/<runId>/` 디렉터리를 `mkdirSync`로 만들어 둔다. `build-report.mjs`도 파일을 쓰기 전에
+같은 디렉터리를 한 번 더 만들어서(`fs`가 있어 문제없다), 이 스크립트 하나만 단독 실행할 때도
+안전하다.
 
 browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 보려면 저장소 루트의
 `scripts/build-combined-summary.mjs <runId>`를 쓴다 — browser/api 실행에 같은 `DORO_RUN_ID`를
-지정해야 서로 짝지어진다.
+지정해야 서로 짝지어진다. 이 스크립트는 `combined-summary.json`과 함께 `reports/<runId>/report.md`도
+만든다 — 모든 케이스를 `testCaseId` 오름차순으로 정리한 사람이 읽기 좋은 Markdown 표로, 정본은
+여전히 `combined-summary.json`/각 스위트의 `results.jsonl`이다.
 
 ## 알려진 한계
 
