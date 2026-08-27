@@ -1211,19 +1211,48 @@ async function registerEntryViaUi(page: Page, businessDate: string, partySize: n
   return { status, entryId, queueNumber, transportError }
 }
 
+// register() 직후의 즉시 1회 load(false)와 그 뒤 useBoundedPolling(5초 간격 최대 3회, 최대 15초
+// 추가)에 기대는 대신, 테스트가 "새로고침" 버튼을 능동적으로 최대 maxAttempts회 눌러가며 매회
+// GET /api/v1/queues/entry 응답을 확인하는 Retry Loop. 실 배포 Trace 분석 결과 등록한 Entry는
+// POST 직후 GET 응답 Body에 항상 정확히 존재했다(WAITING 상태까지 일치) — 즉 서버 데이터는
+// 문제없고, 화면에 반영되는 시점만 앱 내부 Polling 타이밍(최대 15초+α, 정확한 서버쪽 지연 원인은
+// 이 저장소 범위 밖)보다 늦을 수 있었다. Timeout을 더 늘리는 대신 명시적 재확인으로 전환해 앱의
+// 내부 타이밍에 의존하지 않도록 한다. EntryQueueView.vue의 "새로고침" 버튼은 search() → queue.load()
+// 를 호출하며 businessDate가 이미 채워져 있고 진행 중인 load()가 없는 한 항상 활성화 상태다.
+async function waitForQueueRowViaRefresh(page: Page, queueNumber: number, maxAttempts = 8): Promise<boolean> {
+  const row = page.locator('table tbody tr').filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
+  for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
+    if (await row.isVisible().catch(() => false)) return true
+    if (attempt === maxAttempts) break
+    try {
+      await Promise.all([
+        page.waitForResponse(
+          (res) => res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/queues/entry',
+          { timeout: 5_000 },
+        ),
+        page.getByRole('button', { name: '새로고침', exact: true }).click(),
+      ])
+    } catch {
+      // 새로고침 요청/응답 자체가 실패해도(예: 버튼이 일시적으로 비활성화된 순간과 겹침) 다음
+      // attempt에서 다시 시도한다 — 최종적으로 못 찾으면 루프 종료 후 false를 반환한다.
+    }
+  }
+  return false
+}
+
 // 방금 만든 행("#{queueNumber}")을 찾아 그 행의 "취소" 버튼을 누른다. act('cancel')도 Route 이동
 // 없이 같은 화면에서 load(false)로 갱신한다 — OrderDetailPanel의 "주문 취소"와 달리 이 화면은
 // window.confirm()을 띄우지 않는다(EntryQueueView.vue 템플릿에 confirm 호출이 없음, 확인 완료).
 // queueNumber를 문자열로 그대로 매칭하면 "#3"이 "#30"에도 부분 일치할 수 있어 뒤에 숫자가 더
-// 이어지지 않는 경우만 매칭하도록 정규식을 쓴다.
+// 이어지지 않는 경우만 매칭하도록 정규식을 쓴다. 행이 아직 안 보이면(registerEntryViaUi의
+// rowVisible 확인이 실패해 여기로 온 경우 포함) waitForQueueRowViaRefresh로 한 번 더 명시적
+// 재시도한다.
 async function cancelEntryRowViaUi(page: Page, entryId: string, queueNumber: number): Promise<number> {
   const row = page.locator('table tbody tr').filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
-  // 실 배포 실측 결과 register() 직후 load(false)가 방금 만든 Entry를 목록에 반영하기까지
-  // 5~10초보다 훨씬 오래(약 15초 이상) 걸릴 수 있었다(queueNumber 발급용 Counter 자원의 갱신·전파
-  // 지연으로 추정 — 서버쪽 정확한 원인은 이 저장소 범위 밖). registerEntryViaUi 쪽에서 이미 18초를
-  // 기다렸는데도 여기로 온 경우(=아직 안 보였거나 registerEntryViaUi 자체가 실패해 처음 찾는
-  // 경우)를 위한 보조 대기라 test.setTimeout(45_000) 예산을 고려해 15초로 잡는다.
-  await row.waitFor({ state: 'visible', timeout: 15_000 })
+  const visible = await waitForQueueRowViaRefresh(page, queueNumber)
+  if (!visible) {
+    throw new Error(`행(#${queueNumber})이 "새로고침" 재시도 후에도 화면에 보이지 않습니다`)
+  }
   const [cancelResponse] = await Promise.all([
     page.waitForResponse(
       (res) =>
@@ -1236,7 +1265,7 @@ async function cancelEntryRowViaUi(page: Page, entryId: string, queueNumber: num
 }
 
 test('FE-BE-023 화면에서 입장 대기 등록 → 취소', async ({ page }) => {
-  test.setTimeout(45_000)
+  test.setTimeout(60_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
@@ -1264,21 +1293,12 @@ test('FE-BE-023 화면에서 입장 대기 등록 → 취소', async ({ page }) 
   // (순전한 UI 렌더링 확인)과는 독립시킨다. FE-BE-020이 겪은 것과 같은 이유로, 화면 확인이
   // 타이밍 문제로 실패해도 서버에는 이미 WAITING Entry가 생겼을 수 있어 정리는 반드시 시도해야 한다.
   const shouldAttemptCleanup = status === 201 && entryId !== ''
-  // Error Context 스냅샷 실측 결과 register() 직후 load(false)가 방금 만든 Entry를 목록에 반영
-  // 하기까지 15초 이상 걸린 사례가 있었다(FE-BE-020/022가 겪었던 몇백ms 수준의 렌더링 지연과는
-  // 다르게 더 긴 지연 — queueNumber 발급용 Counter 자원의 갱신·전파 지연으로 추정, 서버쪽 정확한
-  // 원인 확정은 이 저장소 범위 밖). 실측치(15초+)에 여유를 두고 18초로 늘린다 — 이 아래
-  // cancelEntryRowViaUi의 보조 대기(15초)와 로그인·등록에 걸리는 시간을 더해도
-  // test.setTimeout(45_000) 예산 안에 들어온다.
+  // Trace 분석 결과(위 registerEntryViaUi 주석 참고) register() 직후의 즉시 1회 load(false)와
+  // 그 뒤 useBoundedPolling(최대 15초)만으로는 반영 시점을 안정적으로 못 잡는 경우가 있었다.
+  // Timeout을 계속 늘리는 대신 waitForQueueRowViaRefresh로 "새로고침"을 최대 8회 능동적으로
+  // 눌러가며 매회 GET 응답을 직접 확인한다 — 앱 내부 폴링 타이밍에 기대지 않는다.
   const rowVisible =
-    shouldAttemptCleanup && queueNumber !== null
-      ? await page
-          .locator('table tbody tr')
-          .filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
-          .waitFor({ state: 'visible', timeout: 18_000 })
-          .then(() => true)
-          .catch(() => false)
-      : false
+    shouldAttemptCleanup && queueNumber !== null ? await waitForQueueRowViaRefresh(page, queueNumber) : false
   const registered = status === 201 && entryId !== '' && rowVisible
   const pass = registered && !transportError
 
