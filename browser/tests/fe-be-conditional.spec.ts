@@ -6,7 +6,7 @@ import { appendCaseResult, type CaseResultInput } from '../lib/resultLogger'
 import { randomToken, allowLocalSelfSignedCert } from '../lib/provisioning'
 import { setupRoleFixtures, type RoleAccount } from '../lib/roleFixtures'
 
-// FE-BE-010~015 (배포 Frontend–Backend 종단 검증.md §4 "조건부 Browser 시나리오"). FE-BE-001~006과 달리 전부
+// FE-BE-010~015,020,021,023~027 (조건부 Browser 시나리오). FE-BE-001~006과 달리 전부
 // 조건부다 — Fixture나 안전장치가 없으면 SKIP_PRECONDITION으로 건너뛰고 나머지는 계속 실행한다.
 
 const env = loadDeployEnv()
@@ -576,7 +576,7 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
 })
 
 // ---------------------------------------------------------------------------
-// FE-BE-020/021: 주문 생성 → 결제 시작 (Tier B, 파괴적) — RUN_DESTRUCTIVE_ORDER_TESTS 필요
+// FE-BE-020/021/024: 주문 생성·취소 → 결제 시작·복구 (Tier B, 파괴적) — RUN_DESTRUCTIVE_ORDER_TESTS 필요
 //
 // 주문 취소 API(POST /api/v1/orders/{orderId}/cancel, Doro-ERP-Front src/api/order.ts의
 // cancelOrder())가 실제로 존재함을 확인했다(EdgeOrderController.java → commerce-api
@@ -587,7 +587,7 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
 // 때만 성공하고(그 외엔 409 INVALID_STATE), 멱등이 아니다 — 이미 CANCELLED인 주문에 다시 호출해도
 // 409다. Role 제한은 없다(로그인한 직원이면 역할 무관).
 //
-// 그래서 아래 두 테스트는 각자 만든 주문을 테스트 마지막에 이 API로 최선 노력(Best-effort) 취소해
+// 그래서 아래 세 테스트는 각자 만든 주문을 테스트 마지막에 이 API로 취소해
 // 실 테넌트에 CREATED 상태 주문이 방치되지 않게 한다(QUEUE-003의 try/finally 정리 철학과 동일) —
 // 다만 정리에 성공해도 취소 이력 자체는 영구히 남고, FE-BE-021처럼 결제(Payment)가 이미 생성된
 // 뒤에는 정리 취소가 409로 거절될 수 있다(아래 FE-BE-021 주석 참고) — 그 경우 실 테넌트에 CREATED
@@ -672,7 +672,7 @@ async function cancelOrderViaUi(page: Page, orderId: string): Promise<number> {
   return cancelResponse.status()
 }
 
-test('FE-BE-020 화면에서 새 주문 생성', async ({ page }) => {
+test('FE-BE-020 화면에서 새 주문 생성 후 취소', async ({ page }) => {
   test.setTimeout(45_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
@@ -724,12 +724,21 @@ test('FE-BE-020 화면에서 새 주문 생성', async ({ page }) => {
         .catch(() => false)
     : false
   const created = status === 201 && orderId !== '' && detailVisible
-  const pass = created && !transportError
 
   let cleanupCancelStatus = 0
+  let cancelledStatusVisible = false
   if (shouldAttemptCleanup) {
     try {
       cleanupCancelStatus = await cancelOrderViaUi(page, orderId)
+      cancelledStatusVisible =
+        cleanupCancelStatus === 200
+          ? await page
+              .locator('article.order-detail')
+              .getByText('취소', { exact: true })
+              .waitFor({ state: 'visible', timeout: 5_000 })
+              .then(() => true)
+              .catch(() => false)
+          : false
     } catch (error) {
       console.error(
         `⚠ FE-BE-020이 만든 주문(${orderId})을 정리(취소)하지 못했습니다 — 실 테넌트에 CREATED ` +
@@ -737,6 +746,8 @@ test('FE-BE-020 화면에서 새 주문 생성', async ({ page }) => {
       )
     }
   }
+  const orderCancelled = cleanupCancelStatus === 200 && cancelledStatusVisible
+  const pass = created && orderCancelled && !transportError
 
   record({
     testCaseId: 'FE-BE-020',
@@ -753,15 +764,23 @@ test('FE-BE-020 화면에서 새 주문 생성', async ({ page }) => {
     assertions: {
       orderCreated: status === 201,
       orderDetailVisible: detailVisible,
-      cleanupCancelSucceeded: shouldAttemptCleanup && cleanupCancelStatus === 200,
+      orderCancelledViaUi: cleanupCancelStatus === 200,
+      cancelledStatusVisible,
     },
     browser: browserCounts(errors),
-    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_ORDER_CREATE_FAILED',
+    errorClass: pass
+      ? null
+      : transportError
+        ? 'UI_API_REQUEST_NOT_SENT'
+        : created
+          ? 'UI_ORDER_CANCEL_FAILED'
+          : 'UI_ORDER_CREATE_FAILED',
   })
 
   expect(
     pass,
-    `FE-BE-020 실패: status=${status} orderId="${orderId}" detailVisible=${detailVisible} transportError=${transportError}`,
+    `FE-BE-020 실패: status=${status} orderId="${orderId}" detailVisible=${detailVisible} ` +
+      `cancelStatus=${cleanupCancelStatus} cancelledStatusVisible=${cancelledStatusVisible} transportError=${transportError}`,
   ).toBe(true)
 })
 
@@ -931,6 +950,204 @@ test('FE-BE-021 결제 시작 시 Toss 결제창 연동 확인', async ({ page, 
     pass,
     `FE-BE-021 실패: paymentCreateStatus=${paymentCreateStatus} tossWidgetSignal=${tossWidgetSignal} ` +
       `payButtonError=${payButtonError} cleanupCancelStatus=${cleanupCancelStatus}`,
+  ).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// FE-BE-024: PENDING 결제 새로고침 복구 (Tier B, 파괴적) — RUN_DESTRUCTIVE_ORDER_TESTS 필요
+//
+// FE-BE-021이 결제 생성과 Toss 창 연결 시작까지만 검증한다면, 이 케이스는 그 직후 주문 상세를
+// 새로 불러왔을 때 Front가 최근 paymentId 또는 GET /payments/by-order/{orderId}로 기존 PENDING
+// 결제를 다시 찾고 두 번째 POST /payments 없이 "결제 계속하기"를 노출하는지 검증한다.
+// ---------------------------------------------------------------------------
+test('FE-BE-024 새로고침 후 기존 PENDING 결제 복구', async ({ page }) => {
+  test.setTimeout(60_000)
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+
+  if (process.env[DESTRUCTIVE_ORDER_FLAG] !== 'true') {
+    record({
+      testCaseId: 'FE-BE-024',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        `${DESTRUCTIVE_ORDER_FLAG}=true로 명시하지 않으면 실행하지 않음 — 새 주문과 PENDING 결제를 ` +
+        '생성하고 주문 취소 이력이 영구히 남는다.',
+    })
+    return
+  }
+
+  await loginAsAuthValid01(page, env)
+  const created = await createOrderViaUi(page)
+  if (created.skipReason) {
+    record({
+      testCaseId: 'FE-BE-024',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: created.skipReason,
+    })
+    return
+  }
+  if (created.status !== 201 || !created.orderId) {
+    record({
+      testCaseId: 'FE-BE-024',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: created.transportError ? 'ERROR_TRANSPORT' : 'FAIL_UI',
+      errorClass: 'FE-BE-024의 전제조건인 주문 생성 실패 — FE-BE-020 참고',
+    })
+    expect(false, `FE-BE-024 실패: 주문 생성 status=${created.status}`).toBe(true)
+    return
+  }
+
+  const orderId = created.orderId
+  let paymentCreateCount = 0
+  const countPaymentCreate = (request: Request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/payments') {
+      paymentCreateCount += 1
+    }
+  }
+  page.on('request', countPaymentCreate)
+
+  let paymentCreateStatus = 0
+  let paymentId = ''
+  let paymentStatus = ''
+  let recoveryStatus = 0
+  let recoveredPaymentStatus = ''
+  let resumeButtonVisible = false
+  let tossConfigError = false
+  let cleanupCancelStatus = 0
+  let transportError: string | null = null
+  let requestId = ''
+
+  try {
+    const [createResponse] = await Promise.all([
+      page
+        .waitForResponse(
+          (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/payments',
+          { timeout: 10_000 },
+        )
+        .catch(() => null),
+      page.getByRole('button', { name: '결제하기' }).click(),
+    ])
+
+    paymentCreateStatus = createResponse?.status() ?? 0
+    requestId = createResponse?.headers()['x-request-id'] ?? ''
+    if (!createResponse) {
+      tossConfigError = await page
+        .locator('.payment-panel__error', { hasText: '결제를 시작할 수 없습니다' })
+        .isVisible()
+        .catch(() => false)
+    } else if (paymentCreateStatus === 201) {
+      const body = await createResponse.json().catch(() => null)
+      paymentId = typeof body?.id === 'string' ? body.id : ''
+      paymentStatus = typeof body?.status === 'string' ? body.status : ''
+
+      // 원격 Toss SDK가 iframe을 붙이는 동안 즉시 Navigation하면 정상적인 SDK Request까지
+      // requestfailed로 기록될 수 있다. 실제 결제 승인은 하지 않되 렌더 시작만 짧게 기다린다.
+      await page.waitForSelector('iframe[src*="tosspayments.com"]', { timeout: 10_000 }).catch(() => null)
+
+      let recoveryResponse: Response | null = null
+      ;[recoveryResponse] = await Promise.all([
+        page.waitForResponse(
+          (res) => {
+            if (res.request().method() !== 'GET') return false
+            const path = new URL(res.url()).pathname
+            return (
+              (paymentId !== '' && path === `/api/v1/payments/${paymentId}`) ||
+              path === `/api/v1/payments/by-order/${orderId}`
+            )
+          },
+          { timeout: 10_000 },
+        ),
+        page.goto(`/pos/orders/${orderId}`),
+      ])
+
+      recoveryStatus = recoveryResponse.status()
+      requestId = recoveryResponse.headers()['x-request-id'] ?? requestId
+      const recoveredBody = await recoveryResponse.json().catch(() => null)
+      recoveredPaymentStatus = typeof recoveredBody?.status === 'string' ? recoveredBody.status : ''
+      resumeButtonVisible = await page
+        .getByRole('button', { name: '결제 계속하기' })
+        .waitFor({ state: 'visible', timeout: 10_000 })
+        .then(() => true)
+        .catch(() => false)
+    }
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  } finally {
+    page.off('request', countPaymentCreate)
+    try {
+      await page.goto(`/pos/orders/${orderId}`)
+      await page.locator('article.order-detail').waitFor({ state: 'visible', timeout: 10_000 })
+      cleanupCancelStatus = await cancelOrderViaUi(page, orderId)
+    } catch (error) {
+      console.error(
+        `⚠ FE-BE-024가 만든 주문(${orderId})을 정리(취소)하지 못했습니다 — CREATED 주문과 PENDING ` +
+          `결제가 남을 수 있어 수동 확인이 필요합니다: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
+  const recovered =
+    paymentCreateStatus === 201 &&
+    paymentId !== '' &&
+    paymentStatus === 'PENDING' &&
+    recoveryStatus === 200 &&
+    recoveredPaymentStatus === 'PENDING' &&
+    resumeButtonVisible &&
+    paymentCreateCount === 1
+  const pass = recovered && cleanupCancelStatus === 200 && !transportError
+  const resultCode = tossConfigError
+    ? 'SKIP_PRECONDITION'
+    : transportError
+      ? 'ERROR_TRANSPORT'
+      : pass
+        ? 'PASS'
+        : 'FAIL_UI'
+
+  record({
+    testCaseId: 'FE-BE-024',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias: 'AUTH_VALID_01',
+    resultCode,
+    expected: { requestPath: '/api/v1/payments', httpStatus: 201 },
+    observed: {
+      requestPath: paymentId ? `/api/v1/payments/${paymentId}` : '/api/v1/payments',
+      httpStatus: recoveryStatus || paymentCreateStatus,
+      finalPath: new URL(page.url()).pathname,
+    },
+    requestId,
+    assertions: {
+      pendingPaymentCreated: paymentCreateStatus === 201 && paymentStatus === 'PENDING',
+      pendingPaymentRecovered: recoveryStatus === 200 && recoveredPaymentStatus === 'PENDING',
+      resumeButtonVisible,
+      duplicatePaymentCreateAbsent: paymentCreateCount === 1,
+      cleanupCancelSucceeded: cleanupCancelStatus === 200,
+    },
+    browser: browserCounts(errors),
+    errorClass: tossConfigError
+      ? 'VITE_TOSS_CLIENT_KEY 미설정(또는 형식 오류) — 배포 Frontend 빌드 설정 확인 필요'
+      : pass
+        ? null
+        : transportError
+          ? 'UI_API_REQUEST_NOT_SENT'
+          : 'UI_PENDING_PAYMENT_RECOVERY_FAILED',
+  })
+
+  if (resultCode === 'SKIP_PRECONDITION') return
+  expect(
+    pass,
+    `FE-BE-024 실패: createStatus=${paymentCreateStatus} paymentId="${paymentId}" ` +
+      `paymentStatus=${paymentStatus} recoveryStatus=${recoveryStatus} recoveredStatus=${recoveredPaymentStatus} ` +
+      `resumeVisible=${resumeButtonVisible} createCount=${paymentCreateCount} cleanup=${cleanupCancelStatus} ` +
+      `transportError=${transportError}`,
   ).toBe(true)
 })
 
@@ -1196,6 +1413,119 @@ async function createProductViaUi(page: Page, categoryName: string, name: string
   return { status, productId, transportError }
 }
 
+interface UpdateCategoryUiResult {
+  status: number
+  name: string
+  transportError: string | null
+}
+
+async function updateCategoryViaUi(
+  page: Page,
+  categoryId: string,
+  currentName: string,
+  nextName: string,
+): Promise<UpdateCategoryUiResult> {
+  let response: Response | null = null
+  let transportError: string | null = null
+  try {
+    const row = page.locator('.category-list li').filter({ hasText: currentName })
+    await row.getByRole('button', { name: '수정', exact: true }).click()
+    await page.locator('#category-name').fill(nextName)
+    await page.locator('#category-order').fill('2')
+    ;[response] = await Promise.all([
+      page.waitForResponse(
+        (res) =>
+          res.request().method() === 'PATCH' &&
+          new URL(res.url()).pathname === `/api/v1/catalog/categories/${categoryId}`,
+      ),
+      page.locator('#category-editor').getByRole('button', { name: '저장' }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const status = response?.status() ?? 0
+  const body = response ? await response.json().catch(() => null) : null
+  const name = typeof body?.name === 'string' ? body.name : ''
+  return { status, name, transportError }
+}
+
+interface UpdateProductUiResult {
+  status: number
+  name: string
+  price: string
+  transportError: string | null
+}
+
+async function updateProductViaUi(
+  page: Page,
+  productId: string,
+  currentName: string,
+  nextName: string,
+): Promise<UpdateProductUiResult> {
+  let response: Response | null = null
+  let transportError: string | null = null
+  try {
+    const row = page.locator('.product-panel table tbody tr').filter({ hasText: currentName })
+    await row.getByRole('button', { name: '수정', exact: true }).click()
+    await page.getByLabel('상품명').fill(nextName)
+    await page.getByLabel('설명').fill('FE-BE-025 수정 확인')
+    await page.getByLabel('가격').fill('1200')
+    await page.getByLabel('표시 순서').fill('2')
+    ;[response] = await Promise.all([
+      page.waitForResponse(
+        (res) =>
+          res.request().method() === 'PATCH' &&
+          new URL(res.url()).pathname === `/api/v1/catalog/products/${productId}`,
+      ),
+      page.locator('#product-editor').getByRole('button', { name: '저장' }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const status = response?.status() ?? 0
+  const body = response ? await response.json().catch(() => null) : null
+  const name = typeof body?.name === 'string' ? body.name : ''
+  const price = typeof body?.price === 'number' || typeof body?.price === 'string' ? String(body.price) : ''
+  return { status, name, price, transportError }
+}
+
+interface SoldOutUiResult {
+  status: number
+  soldOut: boolean | null
+  transportError: string | null
+}
+
+async function changeSoldOutViaUi(
+  page: Page,
+  productId: string,
+  productName: string,
+  nextSoldOut: boolean,
+): Promise<SoldOutUiResult> {
+  let response: Response | null = null
+  let transportError: string | null = null
+  try {
+    const row = page.locator('.product-panel table tbody tr').filter({ hasText: productName })
+    const buttonName = nextSoldOut ? '품절 처리' : '품절 해제'
+    ;[response] = await Promise.all([
+      page.waitForResponse(
+        (res) =>
+          res.request().method() === 'PATCH' &&
+          new URL(res.url()).pathname === `/api/v1/catalog/products/${productId}/sold-out`,
+      ),
+      row.getByRole('button', { name: buttonName, exact: true }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const status = response?.status() ?? 0
+  const body = response ? await response.json().catch(() => null) : null
+  const soldOut = typeof body?.soldOut === 'boolean' ? body.soldOut : null
+  return { status, soldOut, transportError }
+}
+
 interface DeactivateUiResult {
   status: number
   active: boolean | null
@@ -1233,7 +1563,7 @@ async function deactivateProductViaUi(page: Page, productId: string, productName
   return { status: response.status(), active: typeof body?.active === 'boolean' ? body.active : null }
 }
 
-test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중지', async ({ page }) => {
+test('FE-BE-025 화면에서 분류·상품 등록/수정 → 품절 왕복 → 비활성화', async ({ page }) => {
   test.setTimeout(60_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
@@ -1288,6 +1618,8 @@ test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중�
   const suffix = randomToken().slice(0, 8)
   const categoryName = `E2E-FEBE025-CAT-${suffix}`
   const productName = `E2E-FEBE025-PROD-${suffix}`
+  const updatedCategoryName = `${categoryName}-UPDATED`
+  const updatedProductName = `${productName}-UPDATED`
 
   const categoryResult = await createCategoryViaUi(page, categoryName)
   const categoryCreated = categoryResult.status === 201 && categoryResult.categoryId !== ''
@@ -1296,6 +1628,14 @@ test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중�
   let productResult: CreateProductUiResult = { status: 0, productId: '', transportError: null }
   let productCreated = false
   let productListed = false
+  let categoryUpdate: UpdateCategoryUiResult = { status: 0, name: '', transportError: null }
+  let categoryUpdated = false
+  let productUpdate: UpdateProductUiResult = { status: 0, name: '', price: '', transportError: null }
+  let productUpdated = false
+  let soldOutOn: SoldOutUiResult = { status: 0, soldOut: null, transportError: null }
+  let soldOutOff: SoldOutUiResult = { status: 0, soldOut: null, transportError: null }
+  let currentCategoryName = categoryName
+  let currentProductName = productName
   let productDeactivate: DeactivateUiResult = { status: 0, active: null }
   let categoryDeactivate: DeactivateUiResult = { status: 0, active: null }
 
@@ -1323,6 +1663,70 @@ test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중�
           .waitFor({ state: 'visible', timeout: 5_000 })
           .then(() => true)
           .catch(() => false)
+
+        categoryUpdate = await updateCategoryViaUi(
+          page,
+          categoryResult.categoryId,
+          categoryName,
+          updatedCategoryName,
+        )
+        categoryUpdated = categoryUpdate.status === 200 && categoryUpdate.name === updatedCategoryName
+        if (categoryUpdated) currentCategoryName = updatedCategoryName
+
+        const updatedCategoryListed = categoryUpdated
+          ? await page
+              .locator('.category-list li')
+              .filter({ hasText: updatedCategoryName })
+              .waitFor({ state: 'visible', timeout: 5_000 })
+              .then(() => true)
+              .catch(() => false)
+          : false
+        categoryUpdated = categoryUpdated && updatedCategoryListed
+
+        // Category 수정 후 목록을 다시 읽는 과정에서 선택 상태가 바뀔 수 있으므로 현재 이름으로
+        // 다시 선택한 뒤 Product 수정·품절 왕복을 이어간다.
+        await page
+          .locator('.category-list li')
+          .filter({ hasText: currentCategoryName })
+          .locator('.category-select')
+          .click()
+
+        productUpdate = await updateProductViaUi(
+          page,
+          productResult.productId,
+          productName,
+          updatedProductName,
+        )
+        productUpdated =
+          productUpdate.status === 200 &&
+          productUpdate.name === updatedProductName &&
+          productUpdate.price === '1200'
+        if (productUpdate.status === 200 && productUpdate.name) currentProductName = productUpdate.name
+
+        const updatedProductListed = productUpdated
+          ? await page
+              .locator('.product-panel table tbody tr')
+              .filter({ hasText: updatedProductName })
+              .waitFor({ state: 'visible', timeout: 5_000 })
+              .then(() => true)
+              .catch(() => false)
+          : false
+        productUpdated = productUpdated && updatedProductListed
+
+        if (productUpdated) {
+          soldOutOn = await changeSoldOutViaUi(
+            page,
+            productResult.productId,
+            currentProductName,
+            true,
+          )
+          soldOutOff = await changeSoldOutViaUi(
+            page,
+            productResult.productId,
+            currentProductName,
+            false,
+          )
+        }
       }
     } finally {
       // 정리(cleanup) 시도 여부는 서버 상태(생성 응답 201 + id 확보)로만 판단한다 — 위
@@ -1331,7 +1735,11 @@ test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중�
       // CATALOG-004~006과 같은 "정리는 되지만 이력은 영구 잔존" 패턴.
       if (productCreated) {
         try {
-          productDeactivate = await deactivateProductViaUi(page, productResult.productId, productName)
+          productDeactivate = await deactivateProductViaUi(
+            page,
+            productResult.productId,
+            currentProductName,
+          )
         } catch (error) {
           console.error(
             `⚠ FE-BE-025가 만든 상품(${productResult.productId})을 정리(판매 중지)하지 못했습니다 — ` +
@@ -1341,7 +1749,11 @@ test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중�
         }
       }
       try {
-        categoryDeactivate = await deactivateCategoryViaUi(page, categoryResult.categoryId, categoryName)
+        categoryDeactivate = await deactivateCategoryViaUi(
+          page,
+          categoryResult.categoryId,
+          currentCategoryName,
+        )
       } catch (error) {
         console.error(
           `⚠ FE-BE-025가 만든 분류(${categoryResult.categoryId})를 정리(이용 중지)하지 못했습니다 — ` +
@@ -1354,9 +1766,29 @@ test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중�
 
   const productDeactivatedOk = productDeactivate.status === 200 && productDeactivate.active === false
   const categoryDeactivatedOk = categoryDeactivate.status === 200 && categoryDeactivate.active === false
-  const transportError = categoryResult.transportError ?? productResult.transportError
+  const soldOutRoundTripOk =
+    soldOutOn.status === 200 &&
+    soldOutOn.soldOut === true &&
+    soldOutOff.status === 200 &&
+    soldOutOff.soldOut === false
+  const transportError =
+    categoryResult.transportError ??
+    productResult.transportError ??
+    categoryUpdate.transportError ??
+    productUpdate.transportError ??
+    soldOutOn.transportError ??
+    soldOutOff.transportError
   const pass =
-    categoryCreated && categoryListed && productCreated && productListed && productDeactivatedOk && categoryDeactivatedOk && !transportError
+    categoryCreated &&
+    categoryListed &&
+    productCreated &&
+    productListed &&
+    categoryUpdated &&
+    productUpdated &&
+    soldOutRoundTripOk &&
+    productDeactivatedOk &&
+    categoryDeactivatedOk &&
+    !transportError
 
   record({
     testCaseId: 'FE-BE-025',
@@ -1371,17 +1803,290 @@ test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중�
       categoryListed,
       productCreated,
       productListed,
+      categoryUpdated,
+      productUpdated,
+      soldOutRoundTripOk,
       productDeactivatedOk,
       categoryDeactivatedOk,
     },
     browser: browserCounts(errors),
-    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_CATALOG_REGISTER_OR_DEACTIVATE_FAILED',
+    errorClass: pass
+      ? null
+      : transportError
+        ? 'UI_API_REQUEST_NOT_SENT'
+        : 'UI_CATALOG_CREATE_UPDATE_SOLD_OUT_OR_DEACTIVATE_FAILED',
   })
 
   expect(
     pass,
     `FE-BE-025 실패: categoryStatus=${categoryResult.status} categoryId="${categoryResult.categoryId}" ` +
       `productStatus=${productResult.status} productId="${productResult.productId}" ` +
+      `categoryUpdated=${categoryUpdated} productUpdated=${productUpdated} soldOutRoundTripOk=${soldOutRoundTripOk} ` +
       `productDeactivatedOk=${productDeactivatedOk} categoryDeactivatedOk=${categoryDeactivatedOk}`,
+  ).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// FE-BE-026/027: 운영·보안 이력 화면 (Tier A, 비파괴)
+//
+// 두 화면은 OWNER/MANAGER만 접근할 수 있다. AUTH_VALID_01과 같은 물리 계정일 수 있는 OWNER보다
+// 별도 Rate Limit Bucket을 쓰는 MANAGER를 우선 선택한다. 결과가 비어 있는 것은 정상 계약이므로
+// API 200 + 정상 EmptyState도 PASS로 인정하고, 운영 변경 내역이 있으면 상세 Drawer까지 검증한다.
+// ---------------------------------------------------------------------------
+interface HistoryAccount {
+  account: RoleAccount
+  alias: 'AUTH_ROLE_MANAGER_01' | 'AUTH_ROLE_OWNER_01'
+}
+
+function historyAccount(): HistoryAccount | null {
+  if (env.staticAccounts.roleManager) {
+    return { account: env.staticAccounts.roleManager, alias: 'AUTH_ROLE_MANAGER_01' }
+  }
+  if (env.staticAccounts.roleOwner) {
+    return { account: env.staticAccounts.roleOwner, alias: 'AUTH_ROLE_OWNER_01' }
+  }
+  return null
+}
+
+async function loginHistoryAccount(page: Page, fixture: HistoryAccount): Promise<Response> {
+  await page.goto('/pos/login')
+  await fillLoginForm(
+    page,
+    fixture.account.tenantCode,
+    fixture.account.loginId,
+    fixture.account.password,
+  )
+  const response = await submitAndWaitLogin(page)
+  if (response.status() === 200) {
+    await page.waitForURL('**/pos/orders', { timeout: 10_000 })
+  }
+  return response
+}
+
+test('FE-BE-026 운영 변경 내역 목록과 상세 조회', async ({ page }) => {
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+  const fixture = historyAccount()
+
+  if (!fixture) {
+    record({
+      testCaseId: 'FE-BE-026',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        'AUTH_ROLE_MANAGER_01/AUTH_ROLE_OWNER_01 정적 계정이 모두 없음 — 운영 변경 내역 접근 전제 불충족',
+    })
+    return
+  }
+
+  const loginResponse = await loginHistoryAccount(page, fixture)
+  if (loginResponse.status() !== 200) {
+    record({
+      testCaseId: 'FE-BE-026',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: fixture.alias,
+      resultCode: 'ERROR_TRANSPORT',
+      expected: { requestPath: '/api/v1/auth/login', httpStatus: 200 },
+      observed: { requestPath: '/api/v1/auth/login', httpStatus: loginResponse.status() },
+      assertions: { loginSucceeded: false },
+      browser: browserCounts(errors),
+      errorClass: 'UI_RESPONSE_MAPPING_FAILED',
+    })
+    expect(false, `FE-BE-026 실패: 사전 로그인 status=${loginResponse.status()}`).toBe(true)
+    return
+  }
+
+  let auditResponse: Response | null = null
+  let detailResponse: Response | null = null
+  let transportError: string | null = null
+  try {
+    ;[auditResponse] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/audits',
+      ),
+      page.goto('/pos/history'),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const auditStatus = auditResponse?.status() ?? 0
+  const screenVisible = await page
+    .locator('section.audit-page')
+    .waitFor({ state: 'visible', timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false)
+  const contentRendered = screenVisible
+    ? await expect
+        .poll(
+          async () =>
+            (await page.locator('section.audit-page tbody tr').count()) > 0 ||
+            (await page.getByText('운영 변경 내역이 없습니다', { exact: true }).isVisible().catch(() => false)),
+          { timeout: 10_000 },
+        )
+        .toBe(true)
+        .then(() => true)
+        .catch(() => false)
+    : false
+  const rowCount = contentRendered ? await page.locator('section.audit-page tbody tr').count() : 0
+
+  let detailVerified = rowCount === 0
+  if (rowCount > 0) {
+    try {
+      ;[detailResponse] = await Promise.all([
+        page.waitForResponse((res) => {
+          if (res.request().method() !== 'GET') return false
+          return /^\/api\/v1\/audits\/[^/]+$/.test(new URL(res.url()).pathname)
+        }),
+        page.getByRole('button', { name: '변경 기록 상세 보기' }).first().click(),
+      ])
+      detailVerified =
+        detailResponse.status() === 200 &&
+        (await page
+          .getByRole('dialog', { name: '변경 기록 상세' })
+          .waitFor({ state: 'visible', timeout: 5_000 })
+          .then(() => true)
+          .catch(() => false))
+    } catch (error) {
+      transportError = error instanceof Error ? error.message : String(error)
+      detailVerified = false
+    }
+  }
+
+  const pass = auditStatus === 200 && screenVisible && contentRendered && detailVerified && !transportError
+  record({
+    testCaseId: 'FE-BE-026',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias: fixture.alias,
+    resultCode: transportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_UI',
+    expected: { requestPath: '/api/v1/audits', httpStatus: 200, finalPath: '/pos/history' },
+    observed: {
+      requestPath: detailResponse ? new URL(detailResponse.url()).pathname : '/api/v1/audits',
+      httpStatus: detailResponse?.status() ?? auditStatus,
+      finalPath: new URL(page.url()).pathname,
+    },
+    requestId: detailResponse?.headers()['x-request-id'] ?? auditResponse?.headers()['x-request-id'] ?? '',
+    assertions: {
+      auditQuerySucceeded: auditStatus === 200,
+      auditScreenVisible: screenVisible,
+      listOrEmptyStateRendered: contentRendered,
+      detailVerifiedWhenPresent: detailVerified,
+    },
+    browser: browserCounts(errors),
+    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_AUDIT_HISTORY_FAILED',
+  })
+
+  expect(
+    pass,
+    `FE-BE-026 실패: auditStatus=${auditStatus} screenVisible=${screenVisible} ` +
+      `contentRendered=${contentRendered} rowCount=${rowCount} detailVerified=${detailVerified} ` +
+      `transportError=${transportError}`,
+  ).toBe(true)
+})
+
+test('FE-BE-027 로그인·보안 기록 조회', async ({ page }) => {
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+  const fixture = historyAccount()
+
+  if (!fixture) {
+    record({
+      testCaseId: 'FE-BE-027',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        'AUTH_ROLE_MANAGER_01/AUTH_ROLE_OWNER_01 정적 계정이 모두 없음 — 보안 이력 접근 전제 불충족',
+    })
+    return
+  }
+
+  const loginResponse = await loginHistoryAccount(page, fixture)
+  if (loginResponse.status() !== 200) {
+    record({
+      testCaseId: 'FE-BE-027',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: fixture.alias,
+      resultCode: 'ERROR_TRANSPORT',
+      expected: { requestPath: '/api/v1/auth/login', httpStatus: 200 },
+      observed: { requestPath: '/api/v1/auth/login', httpStatus: loginResponse.status() },
+      assertions: { loginSucceeded: false },
+      browser: browserCounts(errors),
+      errorClass: 'UI_RESPONSE_MAPPING_FAILED',
+    })
+    expect(false, `FE-BE-027 실패: 사전 로그인 status=${loginResponse.status()}`).toBe(true)
+    return
+  }
+
+  await page.goto('/pos/history')
+  await page.getByRole('button', { name: '운영 변경 내역' }).waitFor({ state: 'visible', timeout: 10_000 })
+
+  let securityResponse: Response | null = null
+  let transportError: string | null = null
+  try {
+    ;[securityResponse] = await Promise.all([
+      page.waitForResponse(
+        (res) =>
+          res.request().method() === 'GET' &&
+          new URL(res.url()).pathname === '/api/v1/security-history',
+      ),
+      page.getByRole('button', { name: '로그인·보안 기록' }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const securityStatus = securityResponse?.status() ?? 0
+  const screenVisible = await page
+    .locator('section.security')
+    .waitFor({ state: 'visible', timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false)
+  const contentRendered = screenVisible
+    ? await expect
+        .poll(
+          async () =>
+            (await page.locator('section.security tbody tr').count()) > 0 ||
+            (await page.getByText('로그인·보안 기록이 없습니다', { exact: true }).isVisible().catch(() => false)),
+          { timeout: 10_000 },
+        )
+        .toBe(true)
+        .then(() => true)
+        .catch(() => false)
+    : false
+  const pass = securityStatus === 200 && screenVisible && contentRendered && !transportError
+
+  record({
+    testCaseId: 'FE-BE-027',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias: fixture.alias,
+    resultCode: transportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_UI',
+    expected: { requestPath: '/api/v1/security-history', httpStatus: 200, finalPath: '/pos/history' },
+    observed: {
+      requestPath: '/api/v1/security-history',
+      httpStatus: securityStatus,
+      finalPath: new URL(page.url()).pathname,
+    },
+    requestId: securityResponse?.headers()['x-request-id'] ?? '',
+    assertions: {
+      securityHistoryQuerySucceeded: securityStatus === 200,
+      securityHistoryScreenVisible: screenVisible,
+      listOrEmptyStateRendered: contentRendered,
+    },
+    browser: browserCounts(errors),
+    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_SECURITY_HISTORY_FAILED',
+  })
+
+  expect(
+    pass,
+    `FE-BE-027 실패: securityStatus=${securityStatus} screenVisible=${screenVisible} ` +
+      `contentRendered=${contentRendered} transportError=${transportError}`,
   ).toBe(true)
 })

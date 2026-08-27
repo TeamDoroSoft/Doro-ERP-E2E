@@ -36,7 +36,7 @@
 // QUEUE-001/002 로그인과 QUEUE-003 등록·취소가 중복 실행되어 AUTH_VALID_01 Bucket을 불필요하게
 // 더 쓰고, 실 테넌트에 취소된 Entry가 한 번 더 남는다. 대신 아래 "QUEUE-003" 단계는 안내만 출력한다.
 // 같은 RUN_DESTRUCTIVE_QUEUE_TESTS 플래그를 FE-BE-023(대기열 접수 화면, tests/fe-be-conditional.spec.ts)도
-// 그대로 읽는다 — 그 케이스는 k6가 아니라 아래 "FE-BE-010~015,020,021,023,025" Playwright 단계 안에서
+// 그대로 읽는다 — 그 케이스는 k6가 아니라 아래 "FE-BE-010~015,020,021,023~027" Playwright 단계 안에서
 // 함께 돈다(별도 안내 불필요 — 그 단계가 이미 guardFlag로 이 플래그 상태를 출력한다).
 //
 // CATALOG-004~006(§10 Tier B)도 정확히 같은 구조·같은 이유다 — api/scenarios/catalog-connectivity.js
@@ -98,18 +98,19 @@ export async function runFullGate() {
   )
 
   steps.push(
-    await runStep('FE-BE-010~015,020,021,023,025 (Playwright 조건부 시나리오)', () => {
+    await runStep('FE-BE-010~015,020,021,023~027 (Playwright 조건부 시나리오)', () => {
       guardFlag(
         'RUN_FAULT_INJECTION_TESTS',
         'FE-BE-012(Provider 장애 주입)',
         'RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 (나머지 FE-BE-010/011/013/014/015는 이 플래그와 무관하게 각자 Fixture 유무로 실행/SKIP됩니다).',
       )
-      // FE-BE-020(주문 생성)/021(결제 시작)도 같은 파일(tests/fe-be-conditional.spec.ts) 안에 있다 —
+      // FE-BE-020(주문 생성·화면 취소)/021(결제 시작)/024(PENDING 결제 복구)도 같은
+      // 파일(tests/fe-be-conditional.spec.ts) 안에 있다 —
       // 주문 취소 API가 소프트 취소라 order_status_history에 생성·취소 이력이 영구히 남기 때문에
       // (QUEUE-003/CATALOG-004~006과 같은 이유) 이 플래그 없이는 SKIP_PRECONDITION으로 끝난다.
       guardFlag(
         'RUN_DESTRUCTIVE_ORDER_TESTS',
-        'FE-BE-020/021(주문 생성·결제 시작)',
+        'FE-BE-020/021/024(주문 생성·결제 시작·PENDING 복구)',
         'RUN_DESTRUCTIVE_ORDER_TESTS=true를 export한 뒤 다시 실행하세요.',
       )
       // FE-BE-023(대기열 접수 화면)도 같은 파일 안에 있다 — 위 QUEUE-003과 정확히 같은 이유로
