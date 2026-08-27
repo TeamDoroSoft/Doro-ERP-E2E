@@ -706,18 +706,28 @@ test('FE-BE-020 화면에서 새 주문 생성', async ({ page }) => {
     return
   }
 
-  const detailVisible =
-    status === 201 && orderId !== ''
-      ? await page
-          .locator('article.order-detail')
-          .isVisible()
-          .catch(() => false)
-      : false
+  // 정리(cleanup) 시도 여부는 서버에 주문이 실제로 생성됐는지(status 201 + orderId 확보)로만
+  // 판단한다 — 아래 detailVisible(순전히 UI 렌더링 확인)과는 완전히 독립시킨다. 그렇지 않으면
+  // 실 배포 실측대로(2026-08-27) detailVisible이 타이밍 문제로 false가 되는 순간 서버에는 주문이
+  // 실제로 생겼는데도 정리 시도 자체가 스킵되어 실 테넌트에 주문이 방치된다.
+  const shouldAttemptCleanup = status === 201 && orderId !== ''
+  // waitForResponse는 응답 헤더 도착 시점에만 resolve된다 — 그 뒤 Vue Router가 주문 상세로
+  // Navigation하고 <article class="order-detail">을 실제로 그리기까지 시간차가 있다. isVisible()은
+  // 그 순간 한 번만 확인하는 non-retrying API라 이 시간차를 못 버티고 오탐 FAIL을 낼 수 있다
+  // (FE-BE-022를 고친 bfa9ba9와 같은 원인, 실 배포 실측으로 재확인). errorLocator/salesTable과
+  // 동일하게 auto-retrying waitFor로 렌더링을 기다린다.
+  const detailVisible = shouldAttemptCleanup
+    ? await page
+        .locator('article.order-detail')
+        .waitFor({ state: 'visible', timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false)
+    : false
   const created = status === 201 && orderId !== '' && detailVisible
   const pass = created && !transportError
 
   let cleanupCancelStatus = 0
-  if (created) {
+  if (shouldAttemptCleanup) {
     try {
       cleanupCancelStatus = await cancelOrderViaUi(page, orderId)
     } catch (error) {
@@ -743,7 +753,7 @@ test('FE-BE-020 화면에서 새 주문 생성', async ({ page }) => {
     assertions: {
       orderCreated: status === 201,
       orderDetailVisible: detailVisible,
-      cleanupCancelSucceeded: created && cleanupCancelStatus === 200,
+      cleanupCancelSucceeded: shouldAttemptCleanup && cleanupCancelStatus === 200,
     },
     browser: browserCounts(errors),
     errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_ORDER_CREATE_FAILED',
@@ -858,11 +868,23 @@ test('FE-BE-021 결제 시작 시 Toss 결제창 연동 확인', async ({ page, 
   } finally {
     // 결제(Payment)가 PENDING으로 생성된 뒤에도 주문 status는 여전히 CREATED다(useOrderPayment.ts의
     // canCreate가 order.status==='CREATED'를 전제로 결제 생성 버튼을 노출하는 것으로 확인 완료) —
-    // 그래서 정리 취소를 그대로 시도한다. 다만 이 경로는 FE-BE-020과 달리 검증되지 않은 영역이다
-    // (실행 검증 미실시, 아래 완료 보고 참고) — 만약 실제로는 결제 생성이 주문을 다른 status로
-    // 옮기거나 사이드이펙트가 있다면 이 취소 호출이 409로 거절될 수 있고, 그 경우 실 테넌트에
-    // CREATED 주문과 PENDING 결제가 영구히 남는다.
+    // 그래서 정리 취소를 그대로 시도한다. 만약 실제로는 결제 생성이 주문을 다른 status로 옮기거나
+    // 사이드이펙트가 있다면 이 취소 호출이 409로 거절될 수 있고, 그 경우 실 테넌트에 CREATED 주문과
+    // PENDING 결제가 영구히 남는다.
+    //
+    // 실 배포에 --trace on으로 재실행해 Network 로그를 직접 확인한 결과(2026-08-27): 결제 생성 직후
+    // Toss 결제창은 팝업이 아니라 인라인 iframe(GET .../v2/entry/payment-window, 관련 리소스
+    // 80개 이상)으로 같은 화면 위에 떠 있었고, 그 상태에서 그대로 "주문 취소"를 클릭해도
+    // POST /api/v1/orders/{id}/cancel이 Trace 전체에 단 한 번도 나타나지 않았다 — Toss iframe이
+    // OrderDetailPanel의 취소 Button 위를 시각적으로 덮거나 레이아웃을 밀어내 클릭이 의도대로
+    // 작동하지 않은 것으로 보인다. PosOrderDetailView.vue의 loadOrder() 주석대로 이 화면을 Route
+    // Navigation이 아니라 처음부터 다시 불러오면(showLoading=true 경로, `order.value = null` →
+    // `loading.value = true`) 아래 템플릿의 `v-else-if="order"` 분기가 OrderPaymentPanel(그
+    // 안의 Toss iframe 포함)을 완전히 unmount하고, 응답이 오면 OrderDetailPanel만 깨끗하게 다시
+    // mount한다 — 그래서 정리 클릭 직전에 주문 상세를 처음부터 다시 불러온다.
     try {
+      await page.goto(`/pos/orders/${orderId}`)
+      await page.locator('article.order-detail').waitFor({ state: 'visible', timeout: 10_000 })
       cleanupCancelStatus = await cancelOrderViaUi(page, orderId)
     } catch (error) {
       cleanupCancelError = error instanceof Error ? error.message : String(error)
