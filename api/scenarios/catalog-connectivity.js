@@ -13,11 +13,16 @@ import { record } from '../lib/resultLogger.js'
 //
 // CATALOG-004~006 (Tier B) — 실제로 Category·Product를 생성·수정·품절 전환하는 상태 변경
 // 흐름이라 RUN_DESTRUCTIVE_CATALOG_TESTS=true를 명시해야 실행된다(QUEUE-003과 같은 성격).
-// CATALOG-001~003과 달리 AUTH_VALID_01이 아니라 AUTH_ROLE_OWNER_01로 별도 로그인한다 — 둘 다
+// [과거 결정 — 2026-08-26 폐기] CATALOG-001~003과 달리 AUTH_VALID_01이 아니라
+// AUTH_ROLE_OWNER_01로 별도 로그인한다 — 둘 다
 // OWNER Role이라 권한 문제는 아니고, AUTH_VALID_01의 테넌트(sample-store)는 실 데모 테넌트라
 // 영구 Catalog 데이터를 남기고 싶지 않기 때문이다. AUTH_ROLE_OWNER_01의 테넌트(e2e-auth-active)는
 // 실 고객이 0명인 합성 E2E 전용 테넌트라 Category·Product가 영구히 남아도 실 서비스에 영향이 없다
-// (DB 직접 조회로 이번 세션에 확인 완료). Category·Product 생성/수정은 CatalogService.java의
+// (DB 직접 조회로 이번 세션에 확인 완료).
+// [현재 결정 — 2026-08-26] 부트캠프 규모라 별도 계정을 새로 요청하지 않고, 이미 확보한
+// AUTH_ROLE_OWNER_01(tenantCode=e2e-auth-active, loginId=e2e-role-owner)을 AUTH_VALID_01 역할까지
+// 겸용한다. 두 별칭은 같은 물리 계정이며 서버측 계정 단위 Rate Limit Bucket도 공유한다.
+// Category·Product 생성/수정은 CatalogService.java의
 // requireCatalogManager() → ActorRole.canManageCatalog(): OWNER·MANAGER만 허용, STAFF는 거절
 // (Category·Product 둘 다 같은 메서드를 거치는 것 확인 완료 — CatalogProductController.java
 // Javadoc에 적힌 제약이 CatalogCategoryController.java에도 그대로 적용된다). DELETE Endpoint가
@@ -135,9 +140,11 @@ export default function () {
   runTierBCatalogTests(env)
 }
 
-// CATALOG-004~006 (Tier B). AUTH_VALID_01 로그인 성공 여부와 무관하게 독립적으로 실행한다 —
-// 위 Tier A와 이 Tier B는 서로 다른 계정(AUTH_VALID_01 vs AUTH_ROLE_OWNER_01)으로 로그인하므로
-// Tier A 로그인 실패가 Tier B를 막을 이유가 없다(QUEUE-003과 달리 같은 계정을 공유하지 않는다).
+// CATALOG-004~006 (Tier B). AUTH_VALID_01 로그인 성공 여부와 무관하게 독립적으로 실행한다.
+// [과거 결정 — 2026-08-26 폐기] Tier A와 Tier B는 서로 다른 계정(AUTH_VALID_01 vs
+// AUTH_ROLE_OWNER_01)으로 로그인하므로 Tier A 로그인 실패가 Tier B를 막을 이유가 없었다.
+// [현재 결정 — 2026-08-26] 두 별칭은 같은 물리 계정이지만, 각 Tier의 결과를 독립적으로 기록하는
+// 기존 제어 흐름은 유지한다. 오케스트레이터는 두 로그인에 필요한 공유 Bucket 예산을 별도로 확보한다.
 function runTierBCatalogTests(env) {
   if (__ENV[DESTRUCTIVE_FLAG] !== 'true') {
     const startedAt = new Date().toISOString()
@@ -154,8 +161,11 @@ function runTierBCatalogTests(env) {
     return
   }
 
-  // AUTH_ROLE_OWNER_01 정적 계정 없이는 CATALOG-004~006을 전용 격리 테넌트에서 실행할 방법이
-  // 없다(env.js 주석 참고 — Provisioning 폴백 없음). auth-lockout-ratelimit.js의
+  // [과거 결정 — 2026-08-26 폐기] AUTH_ROLE_OWNER_01 정적 계정 없이는 CATALOG-004~006을
+  // 전용 격리 테넌트에서 실행할 방법이 없다고 판단했다.
+  // [현재 결정 — 2026-08-26] AUTH_ROLE_OWNER_01은 AUTH_VALID_01과 같은 물리 계정이지만 Tier B가
+  // 별도 환경변수 별칭을 계속 사용하므로 이 설정은 여전히 필요하다. Provisioning 폴백은 없다.
+  // auth-lockout-ratelimit.js의
   // `if (!env.staticAccounts.lockout)` 패턴과 동일하게 처리한다.
   if (!env.staticAccounts.roleOwner) {
     const startedAt = new Date().toISOString()
@@ -166,7 +176,7 @@ function runTierBCatalogTests(env) {
         durationMs: 0,
         accountAlias: 'AUTH_ROLE_OWNER_01',
         resultCode: 'SKIP_PRECONDITION',
-        errorClass: 'AUTH_ROLE_OWNER_01 정적 계정 없음 — 전용 계정 준비 불가',
+        errorClass: 'AUTH_ROLE_OWNER_01 정적 계정 설정 없음 — Tier B 로그인 별칭 준비 불가',
       })
     }
     return

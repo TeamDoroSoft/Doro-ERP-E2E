@@ -42,8 +42,8 @@ doro-erp-e2e/
 
 **`queue-api`(대기열)와 `commerce-api` Catalog 도메인 연결성 검증(`QUEUE-001`~`003`,`CATALOG-001`~`006`)도
 추가했다** — 배포 Frontend–Backend 종단 검증.md §10. Tier A(`QUEUE-001`/`002`,`CATALOG-001`~`003`)는
-`AUTH_VALID_01` 하나만으로 항상 실행되고, 전용 정적 계정을 새로 요구하지 않는다. Tier B의
-`CATALOG-004`~`006`은 `AUTH_ROLE_OWNER_01` 정적 계정을 쓴다(아래 설명 참고).
+`AUTH_VALID_01` 별칭으로 항상 실행하고, Tier B의 `CATALOG-004`~`006`은 `AUTH_ROLE_OWNER_01` 별칭을
+쓴다. 2026-08-26부터 두 별칭은 같은 물리 계정을 가리킨다(아래 설명 참고).
 
 **`audit-api`(감사 로그)와 `commerce-api` sales 도메인 연결성 검증(`AUDIT-001`,`SALES-001`)도
 추가했다** — 같은 §10. 둘 다 Tier A(비파괴 조회)이고 `AUTH_VALID_01` 하나만으로 실행된다. 별도
@@ -71,10 +71,16 @@ Bucket 주의"와 `api/README.md` 참고. `ORDER-001`은 §10 정의 검토 과�
 대기열 도메인 상태 변경에 재사용하지 않고 별도 플래그를 뒀다. `CATALOG-004`~`006`도 같은 이유로
 `RUN_DESTRUCTIVE_CATALOG_TESTS`라는 Catalog 도메인 전용 플래그를 별도로 뒀다 — 셋 다 하나로 묶은
 이유는 `CATALOG-006`(가역)조차 `CATALOG-005`가 만든 Product 없이는 단독 실행이 불가능해서
-독립적으로 켜고 끌 실익이 없기 때문이다. `CATALOG-004`~`006`은 `CATALOG-001`~`003`과 달리
-`AUTH_VALID_01`(실 데모 테넌트 `sample-store`)이 아니라 `AUTH_ROLE_OWNER_01`(실 고객이 없는 합성
-테넌트 `e2e-auth-active`)로 로그인한다 — `DELETE` Endpoint가 없어 생성한 Category·Product가
-영구히 남기 때문에, 그 잔여물을 실 데모 데이터가 아니라 전용 합성 테넌트에만 남기기 위해서다.
+독립적으로 켜고 끌 실익이 없기 때문이다.
+
+> ~~과거 결정: `CATALOG-004`~`006`은 `CATALOG-001`~`003`과 달리 `AUTH_VALID_01`(실 데모 테넌트
+> `sample-store`)이 아니라 `AUTH_ROLE_OWNER_01`(실 고객이 없는 합성 테넌트 `e2e-auth-active`)로
+> 로그인한다 — `DELETE` Endpoint가 없어 생성한 Category·Product가 영구히 남기 때문에, 그 잔여물을
+> 실 데모 데이터가 아니라 전용 합성 테넌트에만 남기기 위해서다.~~
+
+2026-08-26 결정으로, 부트캠프 규모에서 별도 계정을 새로 요청하지 않고 이미 확보한
+`AUTH_ROLE_OWNER_01`(`e2e-auth-active`/`e2e-role-owner`)을 `AUTH_VALID_01` 역할까지 겸용한다. 두 별칭은
+같은 물리 계정이므로 계정 단위 Rate Limit Bucket도 공유한다.
 자세한 내용은 `api/README.md` 참고.
 
 **잠금·Rate Limit(`AUTH-030`,`031`,`033`,`034`)과 장애 주입(`OPS-001`,`003`)도 추가했다** — 기본으로는
@@ -285,7 +291,10 @@ JMESPath `contains()`가 타입 오류를 냈다 — `Aliases.Items || \`[]\``�
 ## 실행 전제
 
 - 로컬 실행 시 값을 채우는 방법은 바로 위 "환경변수 주입 (로컬)" 참고. 실제 값은 절대 커밋하지 않는다.
-- `AUTH_VALID_01` = `sample-store`/`owner` (정상 계정). 잠금·비활성·임시비밀번호 등 조건부 Fixture는 준비되는 대로 추가.
+- ~~과거 결정: `AUTH_VALID_01` = `sample-store`/`owner` (정상 계정).~~
+- 2026-08-26 결정: `AUTH_VALID_01`은 `AUTH_ROLE_OWNER_01`과 같은 `e2e-auth-active`/`e2e-role-owner`
+  계정을 쓴다(부트캠프 규모라 별도 계정을 새로 요청하지 않음). 잠금·비활성·임시비밀번호 등 조건부
+  Fixture는 준비되는 대로 추가.
 - `FE-BE-003`/`SESS-001`이 공통으로 쓰는 비파괴 조회 API는 `GET /api/v1/orders`로 확정했다 — 로그인 성공 시 실제로 이동하는 `/pos/orders` 화면이 `onMounted`에서 자동 호출하고, Role 제한이 없다([PosOrdersView.vue](../Doro-ERP-Front/src/views/PosOrdersView.vue), [EdgeOrderController.java](../Doro-ERP-Service/apps/edge-api/src/main/java/com/dorosoft/erp/edge/presentation/EdgeOrderController.java)).
 - 배포 전용 실행에서는 Mock, `page.route().fulfill()`, 인증 Session 사전 주입을 금지한다(배포 Frontend–Backend 종단 검증.md §2.1).
 - 결과 로그는 `reports/<runId>/results.jsonl`(browser) 및 `reports/<runId>/<suite>.results.jsonl`(api, 같은 `reports/<runId>/` 폴더 아래 정리된다)을 정본으로 하며, Password·Cookie·Session·Token 원문은 절대 기록하지 않는다(배포 Frontend–Backend 종단 검증.md §2, §8). `build-combined-summary.mjs`가 같은 폴더에 만드는 `report.md`는 이 정본들을 `testCaseId` 순으로 재구성한 사람이 읽기 좋은 파생 산출물일 뿐, 그 자체가 정본은 아니다.

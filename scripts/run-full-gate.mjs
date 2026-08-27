@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 전체 게이트 — 필수 게이트(run-mandatory-gate.mjs) 전부 + 조건부/파괴적 시나리오
 // (배포 Frontend–Backend 종단 검증.md §4 조건부 Browser, §5의 AUTH-030~035·OPS-002, §6의
-// OPS-005, §10의 QUEUE-003)까지 한 번에 실행한다.
+// OPS-005, §10의 QUEUE-003·CATALOG-004~006)까지 한 번에 실행한다.
 //
 // 파괴적 플래그(RUN_DESTRUCTIVE_AUTH_TESTS, RUN_FAULT_INJECTION_TESTS)는 이 스크립트가 절대
 // 대신 켜주지 않는다 — 실행하는 사람이 이 명령을 돌리기 "전에" 직접 export해야만 해당
@@ -42,7 +42,9 @@
 // 단계에서 이미 호출된다. 여기서 별도 runK6Scenario를 또 호출하면 CATALOG-001~003 조회와
 // CATALOG-004~006의 Category·Product 생성·수정이 중복 실행되어 실 테넌트(e2e-auth-active)에
 // 겹치는 이름의 Category·Product가 한 번 더 영구히 남는다. 아래 "CATALOG-004~006" 단계도 안내만
-// 출력한다.
+// 출력한다. 2026-08-26부터 AUTH_VALID_01과 AUTH_ROLE_OWNER_01은 같은 물리 계정과 Rate Limit
+// Bucket을 공유한다. runMandatoryGate()는 이 플래그가 켜졌을 때 QUEUE 단계 뒤에서 5분을 추가로
+// 기다린 뒤 Catalog의 Tier A 로그인 1회와 Tier B 로그인 1회를 실행한다.
 import { pathToFileURL } from 'node:url'
 import { runMandatoryGate } from './run-mandatory-gate.mjs'
 import { runStep, guardFlag, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
