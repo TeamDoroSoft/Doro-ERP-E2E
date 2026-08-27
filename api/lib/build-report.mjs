@@ -6,7 +6,7 @@
 // 사용법:
 //   k6 run --log-format=raw api/scenarios/auth-mandatory.js 2>&1 | tee /tmp/run.log
 //   node api/lib/build-report.mjs /tmp/run.log auth-mandatory AUTH-001,AUTH-002,...
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { buildSummaryJson, buildJunitXml } from './report.js'
 
 const [, , logPath, suiteName, mandatoryIdsArg] = process.argv
@@ -45,7 +45,9 @@ const env = {
   deployment: first.deployment,
 }
 
-const base = `reports/${env.runId}.${suiteName}`
+const runDir = `reports/${env.runId}`
+mkdirSync(runDir, { recursive: true })
+const base = `${runDir}/${suiteName}`
 writeFileSync(`${base}.results.jsonl`, results.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8')
 writeFileSync(`${base}.summary.json`, JSON.stringify(buildSummaryJson(env, results, mandatoryIds), null, 2), 'utf8')
 writeFileSync(`${base}.junit.xml`, buildJunitXml(results, suiteName), 'utf8')

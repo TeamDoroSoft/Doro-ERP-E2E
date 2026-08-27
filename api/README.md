@@ -301,7 +301,7 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 `--confirm` 없이 실행하면 아무 컨테이너도 건드리지 않고 사용법만 출력하고 끝난다(배포 Frontend–Backend
 종단 검증.md §6의 "장애 주입은 전용 Stage 또는 승인된 점검 시간에 운영 담당자가 수행" 안전장치를 로컬
 스크립트 차원에서 흉내낸 것). 컨테이너를 멈춘 뒤에는 무슨 일이
-있어도(예외 발생 포함) `finally`에서 다시 올리는 것을 보장한다. 결과는 `reports/<runId>.ops-00N.results.jsonl`에
+있어도(예외 발생 포함) `finally`에서 다시 올리는 것을 보장한다. 결과는 `reports/<runId>/ops-00N.results.jsonl`에
 쌓인다(`build-report.mjs`를 거치지 않고 스크립트가 직접 씀 — 케이스가 하나뿐이라 후처리가 필요 없다).
 
 2026-08-24에 로컬 Docker Prod-like 스택에서 둘 다 실행해 확인: 컨테이너 정지 → `503 LOGIN_UNAVAILABLE`
@@ -357,13 +357,15 @@ core k6 API가 없어서, `record()`는 케이스마다 `console.log(JSON.string
 `2>&1`로 두 스트림을 합쳐서 파일로 받는 이유가 이것이다. 저장소 루트의 오케스트레이터
 (`scripts/run-mandatory-gate.mjs` 등)는 이 스트림 문제를 피하려고 `--console-output=<파일>`로
 k6가 그 줄들을 직접 파일에 쓰게 한다. 어느 경로든 `api/lib/build-report.mjs`(평범한 Node
-스크립트)가 그 파일을 후처리해서 `reports/<runId>.<suite>.{results.jsonl,summary.json,junit.xml}`을
-만든다.
+스크립트)가 그 파일을 후처리해서 `reports/<runId>/<suite>.{results.jsonl,summary.json,junit.xml}`을
+만든다 — browser가 쓰는 `reports/<runId>/results.jsonl`과 같은 `reports/<runId>/` 폴더 아래다.
 
-같은 이유로 파일명은 `reports/<runId>/results.jsonl`처럼 하위 디렉터리를 쓰지 않고
-`reports/<runId>.<suite>.results.jsonl`처럼 `reports/` 바로 아래 평평하다 — k6 코어 JS에는 mkdir
-API가 없어서 없는 하위 디렉터리를 handleSummary 반환값으로 가리키면 조용히 쓰기 실패만 하기 때문이다
-(이것도 로컬 리허설에서 실제 재현·확인). Node 쪽(`build-report.mjs`)은 `fs`가 있어 문제없다.
+k6 코어 JS 자체에는 mkdir API가 없어서, 없는 하위 디렉터리를 `--console-output`이나 handleSummary
+반환값으로 직접 가리키면 조용히 쓰기 실패만 한다(로컬 리허설에서 실제 재현·확인) — 그래서 이
+저장소는 k6를 실행하기 전에 Node(`scripts/lib/gate-steps.mjs`의 `runK6Scenario()`)가 먼저
+`reports/<runId>/` 디렉터리를 `mkdirSync`로 만들어 둔다. `build-report.mjs`도 파일을 쓰기 전에
+같은 디렉터리를 한 번 더 만들어서(`fs`가 있어 문제없다), 이 스크립트 하나만 단독 실행할 때도
+안전하다.
 
 browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 보려면 저장소 루트의
 `scripts/build-combined-summary.mjs <runId>`를 쓴다 — browser/api 실행에 같은 `DORO_RUN_ID`를
