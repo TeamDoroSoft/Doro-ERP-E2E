@@ -250,6 +250,14 @@ node api/lib/build-report.mjs /tmp/catalog-connectivity.log CATALOG \
 - `DELETE` Endpoint가 없어 생성한 Category·Product는 영구히 남는다 — 그래서 실행마다 겹치지 않는
   이름(`E2E-CATALOG-*-${randomUuidV4().slice(0,8)}`)으로 만들고, 결과와 무관하게 `finally`에서
   `active:false` 비활성화를 반드시 시도한다(`QUEUE-003`의 "항상 정리 시도" 철학과 동일).
+
+**실측으로 확인한 중요한 사실(2026-08-27)**: catalog 도메인의 `POST`/`PATCH`는 CSRF 검증
+대상이라, `X-XSRF-TOKEN` 헤더 없이 보내면 애플리케이션 로직 도달 여부와 무관하게 항상
+`403 CSRF_VALIDATION_FAILED`로 거절된다(curl로 직접 재현·확인 완료 — 헤더를 추가하니 즉시
+`201`로 성공). `QUEUE-003`의 `POST`(Entry 등록)는 같은 방식(헤더 없음)으로도 성공하므로, CSRF
+검증 여부는 도메인마다 다르게 적용된다는 뜻이다. `CATALOG-004`~`006`의 모든 쓰기 호출은
+`session-flow.js`가 이미 쓰는 `xsrfTokenFrom(jar, url)` 헬퍼로 로그인 시 심어진 `XSRF-TOKEN`
+Cookie 값을 꺼내 헤더에 실어 보내도록 고쳤다.
 - `PATCH` 계약은 `CatalogService.updateCategory()`/`updateProduct()`를 직접 확인한 결과 **부분
   업데이트**다 — Body의 각 필드가 `null`이면 그 필드는 바꾸지 않는다. 그래서 비활성화 호출은
   `{active:false}`만 보내도 안전하다.

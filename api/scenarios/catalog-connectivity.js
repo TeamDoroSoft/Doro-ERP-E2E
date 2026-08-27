@@ -1,6 +1,6 @@
 import { check, group } from 'k6'
 import { loadDeployEnv } from '../lib/env.js'
-import { freshJar, postJson, getJson, patchJson, header, parseProblem } from '../lib/http.js'
+import { freshJar, postJson, getJson, patchJson, header, parseProblem, xsrfTokenFrom } from '../lib/http.js'
 import { randomUuidV4 } from '../lib/provisioning.js'
 import { record } from '../lib/resultLogger.js'
 
@@ -204,6 +204,13 @@ function runTierBCatalogTests(env) {
   const categoriesUrl = `${env.apiOrigin}/api/v1/catalog/categories`
   const productsUrl = `${env.apiOrigin}/api/v1/catalog/products`
 
+  // 실측 확인(2026-08-27): catalog 도메인의 POST/PATCH는 CSRF 검증 대상이라(QUEUE-003의 POST와
+  // 달리) X-XSRF-TOKEN 헤더 없이 보내면 애플리케이션 도달과 무관하게 항상 403
+  // CSRF_VALIDATION_FAILED로 거절된다 — 실제로 curl로 직접 재현·확인 완료. 로그인 시 심어진
+  // XSRF-TOKEN Cookie 값을 매 쓰기 요청마다 이 헬퍼로 꺼내 헤더에 실어 보낸다
+  // (session-flow.js가 이미 쓰는 것과 같은 패턴).
+  const csrfHeaders = (url) => ({ 'X-XSRF-TOKEN': xsrfTokenFrom(jar, url) })
+
   // CATALOG-005에서 만든 Product를 CATALOG-006이 이어받는다 — 두 그룹은 순서대로(동기) 실행되므로
   // CATALOG-005가 끝난(finally의 비활성화까지 포함) 시점의 최신 version이 여기 담긴다.
   let sharedProductId = null
@@ -214,7 +221,11 @@ function runTierBCatalogTests(env) {
     const t0 = Date.now()
     const categoryName = `E2E-CATALOG-CAT-${randomUuidV4().slice(0, 8)}`
 
-    const createRes = postJson(categoriesUrl, { name: categoryName, displayOrder: 1, active: true }, { jar })
+    const createRes = postJson(
+      categoriesUrl,
+      { name: categoryName, displayOrder: 1, active: true },
+      { jar, headers: csrfHeaders(categoriesUrl) },
+    )
     const createBody = parseProblem(createRes)
     const categoryId = createBody.categoryId
     const created = createRes.status === 201 && !!categoryId
@@ -241,7 +252,7 @@ function runTierBCatalogTests(env) {
         const updateRes = patchJson(
           `${categoriesUrl}/${categoryId}`,
           { name: updatedNameCandidate, displayOrder: 2, active: true },
-          { jar, headers: { 'If-Match': ifMatch } },
+          { jar, headers: { 'If-Match': ifMatch, ...csrfHeaders(`${categoriesUrl}/${categoryId}`) } },
         )
         const updateBody = parseProblem(updateRes)
         updateStatus = updateRes.status
@@ -260,7 +271,7 @@ function runTierBCatalogTests(env) {
         const deactivateRes = patchJson(
           `${categoriesUrl}/${categoryId}`,
           { active: false },
-          { jar, headers: { 'If-Match': ifMatch } },
+          { jar, headers: { 'If-Match': ifMatch, ...csrfHeaders(`${categoriesUrl}/${categoryId}`) } },
         )
         const deactivateBody = parseProblem(deactivateRes)
         deactivateStatus = deactivateRes.status
@@ -304,7 +315,7 @@ function runTierBCatalogTests(env) {
       const categoryCreateRes = postJson(
         categoriesUrl,
         { name: dedicatedCategoryName, displayOrder: 1, active: true },
-        { jar },
+        { jar, headers: csrfHeaders(categoriesUrl) },
       )
       const categoryCreateBody = parseProblem(categoryCreateRes)
       const dedicatedCategoryId = categoryCreateBody.categoryId
@@ -336,7 +347,7 @@ function runTierBCatalogTests(env) {
           displayOrder: 1,
           active: true,
         },
-        { jar },
+        { jar, headers: csrfHeaders(productsUrl) },
       )
       const createBody = parseProblem(createRes)
       const productId = createBody.productId
@@ -366,7 +377,7 @@ function runTierBCatalogTests(env) {
           const updateRes = patchJson(
             `${productsUrl}/${productId}`,
             { name: updatedNameCandidate, price: 2000, displayOrder: 2, active: true },
-            { jar, headers: { 'If-Match': ifMatch } },
+            { jar, headers: { 'If-Match': ifMatch, ...csrfHeaders(`${productsUrl}/${productId}`) } },
           )
           const updateBody = parseProblem(updateRes)
           updateStatus = updateRes.status
@@ -386,7 +397,7 @@ function runTierBCatalogTests(env) {
           const deactivateRes = patchJson(
             `${productsUrl}/${productId}`,
             { active: false },
-            { jar, headers: { 'If-Match': ifMatch } },
+            { jar, headers: { 'If-Match': ifMatch, ...csrfHeaders(`${productsUrl}/${productId}`) } },
           )
           const deactivateBody = parseProblem(deactivateRes)
           productDeactivateStatus = deactivateRes.status
@@ -400,7 +411,7 @@ function runTierBCatalogTests(env) {
         const categoryDeactivateRes = patchJson(
           `${categoriesUrl}/${dedicatedCategoryId}`,
           { active: false },
-          { jar, headers: { 'If-Match': categoryIfMatch } },
+          { jar, headers: { 'If-Match': categoryIfMatch, ...csrfHeaders(`${categoriesUrl}/${dedicatedCategoryId}`) } },
         )
         const categoryDeactivateBody = parseProblem(categoryDeactivateRes)
         categoryDeactivateStatus = categoryDeactivateRes.status
@@ -459,14 +470,22 @@ function runTierBCatalogTests(env) {
     const soldOutUrl = `${env.apiOrigin}/api/v1/catalog/products/${sharedProductId}/sold-out`
     let ifMatch = sharedProductIfMatch
 
-    const toTrueRes = patchJson(soldOutUrl, { soldOut: true }, { jar, headers: { 'If-Match': ifMatch } })
+    const toTrueRes = patchJson(
+      soldOutUrl,
+      { soldOut: true },
+      { jar, headers: { 'If-Match': ifMatch, ...csrfHeaders(soldOutUrl) } },
+    )
     const toTrueBody = parseProblem(toTrueRes)
     const toTrueOk = toTrueRes.status === 200 && toTrueBody.soldOut === true
     if (toTrueRes.status === 200) {
       ifMatch = header(toTrueRes, 'ETag') || `"${toTrueBody.version}"`
     }
 
-    const toFalseRes = patchJson(soldOutUrl, { soldOut: false }, { jar, headers: { 'If-Match': ifMatch } })
+    const toFalseRes = patchJson(
+      soldOutUrl,
+      { soldOut: false },
+      { jar, headers: { 'If-Match': ifMatch, ...csrfHeaders(soldOutUrl) } },
+    )
     const toFalseBody = parseProblem(toFalseRes)
     const toFalseOk = toFalseRes.status === 200 && toFalseBody.soldOut === false
 
