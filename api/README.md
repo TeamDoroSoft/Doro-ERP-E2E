@@ -369,7 +369,9 @@ k6 코어 JS 자체에는 mkdir API가 없어서, 없는 하위 디렉터리를 
 
 browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 보려면 저장소 루트의
 `scripts/build-combined-summary.mjs <runId>`를 쓴다 — browser/api 실행에 같은 `DORO_RUN_ID`를
-지정해야 서로 짝지어진다.
+지정해야 서로 짝지어진다. 이 스크립트는 `combined-summary.json`과 함께 `reports/<runId>/report.md`도
+만든다 — 모든 케이스를 `testCaseId` 오름차순으로 정리한 사람이 읽기 좋은 Markdown 표로, 정본은
+여전히 `combined-summary.json`/각 스위트의 `results.jsonl`이다.
 
 ## 알려진 한계
 
