@@ -288,7 +288,7 @@ JMESPath `contains()`가 타입 오류를 냈다 — `Aliases.Items || \`[]\``�
 - `AUTH_VALID_01` = `sample-store`/`owner` (정상 계정). 잠금·비활성·임시비밀번호 등 조건부 Fixture는 준비되는 대로 추가.
 - `FE-BE-003`/`SESS-001`이 공통으로 쓰는 비파괴 조회 API는 `GET /api/v1/orders`로 확정했다 — 로그인 성공 시 실제로 이동하는 `/pos/orders` 화면이 `onMounted`에서 자동 호출하고, Role 제한이 없다([PosOrdersView.vue](../Doro-ERP-Front/src/views/PosOrdersView.vue), [EdgeOrderController.java](../Doro-ERP-Service/apps/edge-api/src/main/java/com/dorosoft/erp/edge/presentation/EdgeOrderController.java)).
 - 배포 전용 실행에서는 Mock, `page.route().fulfill()`, 인증 Session 사전 주입을 금지한다(배포 Frontend–Backend 종단 검증.md §2.1).
-- 결과 로그는 `reports/<runId>/results.jsonl`(browser) 및 `reports/<runId>/<suite>.results.jsonl`(api, 같은 `reports/<runId>/` 폴더 아래 정리된다)을 정본으로 하며, Password·Cookie·Session·Token 원문은 절대 기록하지 않는다(배포 Frontend–Backend 종단 검증.md §2, §8).
+- 결과 로그는 `reports/<runId>/results.jsonl`(browser) 및 `reports/<runId>/<suite>.results.jsonl`(api, 같은 `reports/<runId>/` 폴더 아래 정리된다)을 정본으로 하며, Password·Cookie·Session·Token 원문은 절대 기록하지 않는다(배포 Frontend–Backend 종단 검증.md §2, §8). `build-combined-summary.mjs`가 같은 폴더에 만드는 `report.md`는 이 정본들을 `testCaseId` 순으로 재구성한 사람이 읽기 좋은 파생 산출물일 뿐, 그 자체가 정본은 아니다.
 - **`AUTH_VALID_01` Rate Limit Bucket 주의**: `browser`와 `api` 스위트를 60초 이내에 이어서 돌리면 계정 Bucket(기본 용량 5)을 넘겨 뒤쪽 케이스가 잘못된 `429`로 실패할 수 있다. 자세한 내용과 대응은 [api/README.md](api/README.md#️-계정-rate-limit-bucket-주의) 참고.
 - **Provisioning API는 어디서도 호출하지 않는다.** 실 테넌트 DB에 추적 안 되는 데이터가 생기는 걸 막기 위해 `AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-010`/`014`, `SESS-004`/`005`의 Provisioning 폴백을 전부 삭제했다 — 정적 계정이 없으면 SKIP만 한다. (로컬 Docker Postgres에 계정을 만드는 `scripts/provision-local-rehearsal-account.mjs`는 별개다 — 실 테넌트 DB가 아니라 매번 새로 띄우는 격리된 로컬 컨테이너를 대상으로 하므로 이 금지와 무관하다.)
 
@@ -300,7 +300,7 @@ browser와 api 결과를 나중에 `build-combined-summary.mjs`로 묶으려면 
 지정해서 실행해야 한다(안 주면 각자 자동 생성한 다른 runId를 써서 서로 못 찾는다).
 
 ```bash
-export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # 세 실행이 전부 이 값을 쓴다
+export DORO_RUN_ID=run-$(TZ='Asia/Seoul' date +%Y-%m-%d_%H-%M-%S)   # 세 실행이 전부 이 값을 쓴다
 
 # 1) browser/ 와 api/ 에서 각각 실제 값을 채운 .env 를 준비한다 (또는 셸 export)
 # 2) Playwright 배포 E2E
@@ -313,7 +313,7 @@ cd ..
 DORO_API_ORIGIN=... DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... \
 DORO_AUTH_VALID_01_PASSWORD=... k6 run --log-format=raw api/scenarios/auth-mandatory.js \
   > /tmp/k6-auth-mandatory.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
+node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log AUTH-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
 # 4) k6 세션 흐름 — SESS-004/005까지 돌리려면 AUTH_TEMP_PASSWORD_01/AUTH_PASSWORD_ROTATE_01
@@ -324,11 +324,12 @@ DORO_AUTH_TEMP_PASSWORD_01_TENANT_CODE=... DORO_AUTH_TEMP_PASSWORD_01_LOGIN_ID=.
 DORO_AUTH_PASSWORD_ROTATE_01_TENANT_CODE=... DORO_AUTH_PASSWORD_ROTATE_01_LOGIN_ID=... \
 DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_A=... DORO_AUTH_PASSWORD_ROTATE_01_PASSWORD_B=... \
   k6 run --log-format=raw api/scenarios/session-flow.js > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log SESS SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
 # 5) 세 결과를 하나의 판정으로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
-# → reports/<runId>/combined-summary.json, frontBackConnected(좁은 판정) 포함
+# → reports/<runId>/combined-summary.json(frontBackConnected 좁은 판정 포함) +
+#   reports/<runId>/report.md(testCaseId 오름차순 사람이 읽기 좋은 요약, 정본은 아님)
 ```
 
 `--log-format=raw`와 `build-report.mjs` 두 단계 다 필수다 — k6의 `handleSummary()`는 VU 실행과
@@ -443,7 +444,7 @@ Container를 직접 때리므로 `DORO_API_ORIGIN`은 그대로 HTTPS이고, 자
 `--insecure-skip-tls-verify`가 추가로 필요하다(실제 dev/stage/prod에는 절대 쓰지 않음).
 
 ```bash
-export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # browser/api 세 실행 전부 이 값을 쓴다
+export DORO_RUN_ID=run-$(TZ='Asia/Seoul' date +%Y-%m-%d_%H-%M-%S)   # browser/api 세 실행 전부 이 값을 쓴다
 
 # 위 스크립트가 만든 .env.local-rehearsal.local을 불러온다
 set -a; source .env.local-rehearsal.local; set +a
@@ -457,7 +458,7 @@ cd ..
 DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-mandatory.js \
   > /tmp/k6-auth-mandatory.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
+node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log AUTH-mandatory \
   AUTH-001,AUTH-002,AUTH-003,AUTH-004,AUTH-010,AUTH-020,AUTH-021,AUTH-022,AUTH-023,AUTH-024
 
 # SESS-004/005는 정적 계정(AUTH_TEMP_PASSWORD_01/AUTH_PASSWORD_ROTATE_01) 전용이라 로컬
@@ -465,7 +466,7 @@ node api/lib/build-report.mjs /tmp/k6-auth-mandatory.log auth-mandatory \
 DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/session-flow.js \
   > /tmp/k6-session-flow.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-session-flow.log session-flow SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
+node api/lib/build-report.mjs /tmp/k6-session-flow.log SESS SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
 # 세 결과를 하나로 묶는다
 node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
@@ -494,7 +495,7 @@ DORO_API_ORIGIN=https://localhost:8080 \
 DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-lockout-ratelimit.js \
   > /tmp/k6-lockout.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033,AUTH-034
+node api/lib/build-report.mjs /tmp/k6-lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033,AUTH-034
 
 # OPS-001/003 — Store Access·Redis 컨테이너를 실제로 멈췄다 올린다 (--confirm 없이는 아무것도 안 함)
 node scripts/run-fault-injection.mjs OPS-001 --confirm

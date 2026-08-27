@@ -45,7 +45,7 @@ export async function runMandatoryGate() {
 
   steps.push(
     await runStep('AUTH-001~004,010,020~024 (k6 auth-mandatory)', () =>
-      runK6Scenario('api/scenarios/auth-mandatory.js', 'auth-mandatory', [
+      runK6Scenario('api/scenarios/auth-mandatory.js', 'AUTH-mandatory', [
         'AUTH-001', 'AUTH-002', 'AUTH-003', 'AUTH-004',
         'AUTH-010', 'AUTH-020', 'AUTH-021', 'AUTH-022', 'AUTH-023', 'AUTH-024',
       ]),
@@ -61,7 +61,7 @@ export async function runMandatoryGate() {
     // AUTH-015 자체 결과는 그대로 실행·기록되며(results.jsonl/junit.xml), 필수 통과 판정에서만
     // 빠진다.
     await runStep('AUTH-011~015 (k6 계정 존재 비노출)', () =>
-      runK6Scenario('api/scenarios/auth-account-nonexposure.js', 'auth-account-nonexposure', [
+      runK6Scenario('api/scenarios/auth-account-nonexposure.js', 'AUTH-nonexposure', [
         'AUTH-011', 'AUTH-012', 'AUTH-013', 'AUTH-014',
       ]),
     ),
@@ -71,7 +71,7 @@ export async function runMandatoryGate() {
 
   steps.push(
     await runStep('SESS-001~003,006,007 (+004/005 조건부) (k6 session-flow)', () =>
-      runK6Scenario('api/scenarios/session-flow.js', 'session-flow', [
+      runK6Scenario('api/scenarios/session-flow.js', 'SESS', [
         'SESS-001', 'SESS-002', 'SESS-003', 'SESS-006', 'SESS-007', 'SESS-004', 'SESS-005',
       ]),
     ),
@@ -90,13 +90,13 @@ export async function runMandatoryGate() {
   // 이 단계가 만드는 results.jsonl/junit.xml에 그대로 기록된다 — 필수 통과 판정에서만 빠진다.
   steps.push(
     await runStep('QUEUE-001~002 (k6 queue-connectivity)', () =>
-      runK6Scenario('api/scenarios/queue-connectivity.js', 'queue-connectivity', ['QUEUE-001', 'QUEUE-002']),
+      runK6Scenario('api/scenarios/queue-connectivity.js', 'QUEUE', ['QUEUE-001', 'QUEUE-002']),
     ),
   )
 
   steps.push(
     await runStep('CATALOG-001~003 (k6 catalog-connectivity)', () =>
-      runK6Scenario('api/scenarios/catalog-connectivity.js', 'catalog-connectivity', [
+      runK6Scenario('api/scenarios/catalog-connectivity.js', 'CATALOG', [
         'CATALOG-001', 'CATALOG-002', 'CATALOG-003',
       ]),
     ),
@@ -120,7 +120,7 @@ export async function runMandatoryGate() {
     // mandatoryIds에 남긴다. SALES-001 자체 결과는 그대로 실행·기록되며(results.jsonl/junit.xml),
     // 필수 통과 판정에서만 빠진다.
     await runStep('AUDIT-001, SALES-001 (k6 audit-sales-connectivity)', () =>
-      runK6Scenario('api/scenarios/audit-sales-connectivity.js', 'audit-sales-connectivity', [
+      runK6Scenario('api/scenarios/audit-sales-connectivity.js', 'AUDIT-SALES', [
         'AUDIT-001',
       ]),
     ),
