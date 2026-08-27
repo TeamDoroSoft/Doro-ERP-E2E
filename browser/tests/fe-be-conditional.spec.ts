@@ -489,6 +489,8 @@ test('FE-BE-010 임시 비밀번호 계정 로그인 시 비밀번호 변경 화
 // FE-BE-014: Role별 Fixture — 허용 메뉴·보호 Route 일치
 // ---------------------------------------------------------------------------
 test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) => {
+  // 공유 OWNER 계정이 Rate Limit에 걸린 경우 65초 회복 후 한 번 재시도한다.
+  test.setTimeout(110_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
@@ -506,42 +508,89 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
     return
   }
 
-  async function loginAndCheckTablesMenu(account: RoleAccount): Promise<boolean> {
-    await page.goto('/pos/login')
-    await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
-    await submitAndWaitLogin(page)
-    await page.waitForURL('**/pos/orders', { timeout: 10_000 })
-    // posNavigation.ts: "테이블"(/pos/tables)은 OWNER/MANAGER 전용 — STAFF에게는 안 보여야 한다.
-    return page
-      .locator('nav a[href="/pos/tables"]')
-      .isVisible()
-      .catch(() => false)
+  const rateLimitRecoveryMs = 65_000
+
+  interface RoleLoginResult {
+    accountAlias: string
+    status: number
+    finalPath: string
+    passwordChangeRequired: boolean
+    rateLimitRetried: boolean
+    tablesMenuVisible: boolean | null
+  }
+
+  async function loginAndCheckTablesMenu(accountAlias: string, account: RoleAccount): Promise<RoleLoginResult> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await page.goto('/pos/login')
+      await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
+      const response = await submitAndWaitLogin(page)
+
+      await page
+        .waitForFunction(
+          () => {
+            const path = window.location.pathname
+            return path === '/pos/orders' || path === '/pos/account/change-password'
+          },
+          undefined,
+          { timeout: 10_000 },
+        )
+        .catch(() => {})
+
+      const status = response.status()
+      const finalPath = new URL(page.url()).pathname
+      if (status === 429 && attempt === 0) {
+        // AUTH_VALID_01과 AUTH_ROLE_OWNER_01은 같은 계정 Bucket을 공유한다.
+        await page.waitForTimeout(rateLimitRecoveryMs)
+        continue
+      }
+
+      const passwordChangeRequired = finalPath === '/pos/account/change-password'
+      const loginSucceeded = status === 200 && finalPath === '/pos/orders'
+      const tablesMenuVisible = loginSucceeded
+        ? await page.locator('nav a[href="/pos/tables"]').isVisible().catch(() => false)
+        : null
+
+      return { accountAlias, status, finalPath, passwordChangeRequired, rateLimitRetried: attempt === 1, tablesMenuVisible }
+    }
+
+    throw new Error(`${accountAlias} 로그인 재시도 루프가 비정상적으로 종료되었습니다.`)
   }
 
   let pass = false
   let staffBlockedPath = ''
   let staffBlockedReason: string | null = null
+  let ownerLogin: RoleLoginResult | null = null
+  let managerLogin: RoleLoginResult | null = null
+  let staffLogin: RoleLoginResult | null = null
   try {
     const fixtures = await setupRoleFixtures(env)
 
-    const ownerHasTablesMenu = await loginAndCheckTablesMenu(fixtures.owner)
-    await logout(page)
+    ownerLogin = await loginAndCheckTablesMenu('AUTH_ROLE_OWNER_01', fixtures.owner)
+    if (ownerLogin.status === 200 && ownerLogin.finalPath === '/pos/orders') await logout(page)
 
-    const managerHasTablesMenu = await loginAndCheckTablesMenu(fixtures.manager)
-    await logout(page)
+    managerLogin = await loginAndCheckTablesMenu('AUTH_ROLE_MANAGER_01', fixtures.manager)
+    if (managerLogin.status === 200 && managerLogin.finalPath === '/pos/orders') await logout(page)
 
-    const staffHasTablesMenu = await loginAndCheckTablesMenu(fixtures.staff)
+    staffLogin = await loginAndCheckTablesMenu('AUTH_ROLE_STAFF_01', fixtures.staff)
     // 메뉴에 없어도 직접 URL로 접근을 시도하면 router/index.ts의 Role Guard가
     // /pos/orders?reason=forbidden으로 되돌려야 한다(§실제 구현 확인 완료).
-    await page.goto('/pos/tables')
-    const url = new URL(page.url())
-    staffBlockedPath = url.pathname
-    staffBlockedReason = url.searchParams.get('reason')
+    if (staffLogin.status === 200 && staffLogin.finalPath === '/pos/orders') {
+      await page.goto('/pos/tables')
+      const url = new URL(page.url())
+      staffBlockedPath = url.pathname
+      staffBlockedReason = url.searchParams.get('reason')
+    }
 
     pass =
-      ownerHasTablesMenu === true &&
-      managerHasTablesMenu === true &&
-      staffHasTablesMenu === false &&
+      ownerLogin.status === 200 &&
+      ownerLogin.finalPath === '/pos/orders' &&
+      ownerLogin.tablesMenuVisible === true &&
+      managerLogin.status === 200 &&
+      managerLogin.finalPath === '/pos/orders' &&
+      managerLogin.tablesMenuVisible === true &&
+      staffLogin.status === 200 &&
+      staffLogin.finalPath === '/pos/orders' &&
+      staffLogin.tablesMenuVisible === false &&
       staffBlockedPath === '/pos/orders' &&
       staffBlockedReason === 'forbidden'
 
@@ -550,16 +599,21 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
       startedAt,
       durationMs: Date.now() - t0,
       resultCode: pass ? 'PASS' : 'FAIL_UI',
-      expected: { finalPath: '/pos/orders' },
-      observed: { finalPath: staffBlockedPath },
+      expected: { httpStatus: 200, finalPath: '/pos/orders' },
+      observed: { httpStatus: staffLogin.status, finalPath: staffBlockedPath || staffLogin.finalPath },
       assertions: {
-        ownerHasTablesMenu,
-        managerHasTablesMenu,
-        staffHasTablesMenuAbsent: staffHasTablesMenu === false,
+        ownerLoginSucceeded: ownerLogin.status === 200 && ownerLogin.finalPath === '/pos/orders',
+        ownerHasTablesMenu: ownerLogin.tablesMenuVisible === true,
+        managerLoginSucceeded: managerLogin.status === 200 && managerLogin.finalPath === '/pos/orders',
+        managerHasTablesMenu: managerLogin.tablesMenuVisible === true,
+        staffLoginSucceeded: staffLogin.status === 200 && staffLogin.finalPath === '/pos/orders',
+        staffHasTablesMenuAbsent: staffLogin.tablesMenuVisible === false,
         staffDirectAccessBlocked: staffBlockedPath === '/pos/orders' && staffBlockedReason === 'forbidden',
       },
       browser: browserCounts(errors),
-      errorClass: pass ? null : 'UI_RESPONSE_MAPPING_FAILED',
+      errorClass: pass
+        ? null
+        : JSON.stringify({ ownerLogin, managerLogin, staffLogin, staffBlockedPath, staffBlockedReason }),
     })
   } catch (error) {
     record({
@@ -572,7 +626,10 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
     throw error
   }
 
-  expect(pass, `FE-BE-014 실패: staffBlockedPath="${staffBlockedPath}" staffBlockedReason="${staffBlockedReason}"`).toBe(true)
+  expect(
+    pass,
+    `FE-BE-014 실패: owner=${JSON.stringify(ownerLogin)} manager=${JSON.stringify(managerLogin)} staff=${JSON.stringify(staffLogin)} staffBlockedPath="${staffBlockedPath}" staffBlockedReason="${staffBlockedReason}"`,
+  ).toBe(true)
 })
 
 // ---------------------------------------------------------------------------
