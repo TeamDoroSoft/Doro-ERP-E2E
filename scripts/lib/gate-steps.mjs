@@ -76,9 +76,9 @@ export function runPlaywrightSpec(specFile) {
 // 빈 파일이 돼 모든 케이스가 "결과 0건"으로 잡히는 버그가 있었다. --console-output으로 k6가
 // 그 줄들을 직접 파일에 쓰게 해서 stdout/stderr 라우팅과 무관하게 만든다.
 export function runK6Scenario(scenarioRelPath, suiteName, caseIds) {
-  mkdirSync(REPORTS_DIR, { recursive: true })
   const runId = process.env.DORO_RUN_ID
-  const rawLogPath = resolve(REPORTS_DIR, `${runId}.${suiteName}.raw.log`)
+  mkdirSync(resolve(REPORTS_DIR, runId), { recursive: true })
+  const rawLogPath = resolve(REPORTS_DIR, runId, `${suiteName}.raw.log`)
 
   // 로컬 리허설(자체 서명 TLS) 대상일 때만 검증을 끈다 — 실 dev/stage/prod Origin은 유효한
   // 인증서를 쓰므로 이 플래그가 전혀 필요 없고, 붙이면 오히려 실 배포 검증을 약화시킨다

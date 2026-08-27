@@ -36,22 +36,25 @@ const browser = existsSync(browserSummaryPath)
   : null
 const browserCases = readJsonl(resolve(dirname(browserSummaryPath), 'results.jsonl'))
 
-// api: reports/<runId>.<suite>.summary.json (api/lib/build-report.mjs가 씀, suite마다 하나씩)
-const apiSuiteFiles = existsSync(reportsDir)
-  ? readdirSync(reportsDir).filter((name) => name.startsWith(`${runId}.`) && name.endsWith('.summary.json'))
+// api: reports/<runId>/<suite>.summary.json (api/lib/build-report.mjs가 씀, suite마다 하나씩).
+// browser도 같은 reports/<runId>/ 폴더에 summary.json(접두어 없음)을 쓰므로, 그 자기 자신을
+// api suite로 중복 집계하지 않도록 정확히 그 파일명은 제외한다.
+const runDir = resolve(reportsDir, runId)
+const apiSuiteFiles = existsSync(runDir)
+  ? readdirSync(runDir).filter((name) => name.endsWith('.summary.json') && name !== 'summary.json')
   : []
 const apiSuites = apiSuiteFiles.map((name) => {
-  const suite = name.slice(runId.length + 1, -'.summary.json'.length)
-  return { suite, summaryPath: `reports/${name}`, ...readJson(resolve(reportsDir, name)) }
+  const suite = name.slice(0, -'.summary.json'.length)
+  return { suite, summaryPath: `reports/${runId}/${name}`, ...readJson(resolve(runDir, name)) }
 })
 const apiCases = apiSuiteFiles.flatMap((name) =>
-  readJsonl(resolve(reportsDir, name.replace(/\.summary\.json$/, '.results.jsonl'))),
+  readJsonl(resolve(runDir, name.replace(/\.summary\.json$/, '.results.jsonl'))),
 )
 const cases = [...browserCases, ...apiCases]
 
 if (!browser && apiSuites.length === 0) {
-  console.error(`runId="${runId}"에 해당하는 browser/api 결과를 reports/ 아래에서 찾지 못했습니다.`)
-  console.error('browser는 reports/<runId>/summary.json, api는 reports/<runId>.<suite>.summary.json을 찾는다.')
+  console.error(`runId="${runId}"에 해당하는 browser/api 결과를 reports/${runId}/ 아래에서 찾지 못했습니다.`)
+  console.error('browser는 reports/<runId>/summary.json, api는 reports/<runId>/<suite>.summary.json을 찾는다.')
   process.exit(1)
 }
 
@@ -156,10 +159,10 @@ const combined = {
   caveats,
 }
 
-const outPath = resolve(reportsDir, `${runId}.combined-summary.json`)
+const outPath = resolve(runDir, 'combined-summary.json')
 writeFileSync(outPath, JSON.stringify(combined, null, 2), 'utf8')
 
-console.log(`작성 완료: reports/${runId}.combined-summary.json`)
+console.log(`작성 완료: reports/${runId}/combined-summary.json`)
 console.log(`  mandatoryBrowserPassed = ${mandatoryBrowserPassed}`)
 console.log(`  mandatoryApiPassed     = ${mandatoryApiPassed} (${apiSuites.map((s) => s.suite).join(', ') || '없음'})`)
 console.log(`  sensitiveDataLeakCount = ${sensitiveDataLeakCount}`)

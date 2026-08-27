@@ -196,10 +196,10 @@ function writeResult({ pass, faulted, recovered, healthRecovered, noInternalLeak
     artifacts: { failureScreenshot: null },
     errorClass: pass ? null : 'ASSERTION_MISMATCH',
   }
-  mkdirSync(reportsDir, { recursive: true })
-  const outPath = resolve(reportsDir, `${runId}.${opsId.toLowerCase()}.results.jsonl`)
+  mkdirSync(resolve(reportsDir, runId), { recursive: true })
+  const outPath = resolve(reportsDir, runId, `${opsId.toLowerCase()}.results.jsonl`)
   writeFileSync(outPath, `${JSON.stringify(record)}\n`, 'utf8')
-  console.log(`결과 기록: reports/${runId}.${opsId.toLowerCase()}.results.jsonl`)
+  console.log(`결과 기록: reports/${runId}/${opsId.toLowerCase()}.results.jsonl`)
 }
 
 main().catch((error) => {
