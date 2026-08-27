@@ -13,8 +13,8 @@ k6 기반 배포 API Runner. `AUTH-*`, `SESS-*`, `QUEUE-*`, `CATALOG-*`, `AUDIT-
 
 ```bash
 export DORO_API_ORIGIN=https://doro.minseok.click
-export DORO_AUTH_VALID_01_TENANT_CODE=sample-store
-export DORO_AUTH_VALID_01_LOGIN_ID=owner
+export DORO_AUTH_VALID_01_TENANT_CODE=e2e-auth-active
+export DORO_AUTH_VALID_01_LOGIN_ID=e2e-role-owner
 export DORO_AUTH_VALID_01_PASSWORD=***   # 로컬 Secret Store/CI Secret에서만 주입, 커밋 금지
 export DORO_RUN_ID=run-$(date +%Y%m%d-%H%M%S)   # 다른 스크립트/러너와 같은 runId를 쓰게 하려면 직접 고정
 
@@ -210,11 +210,18 @@ node api/lib/build-report.mjs /tmp/catalog-connectivity.log catalog-connectivity
 ### `CATALOG-004`~`006`: Category·Product 생성·수정·품절 전환 (Tier B, 기본 비활성)
 
 `RUN_DESTRUCTIVE_CATALOG_TESTS=true`가 있어야 실행된다(그 외엔 세 케이스 전부
-`SKIP_PRECONDITION`) — `QUEUE-003`과 같은 이유로 실제로 상태를 바꾸기 때문이다. `CATALOG-001`~`003`과
-달리 `AUTH_VALID_01`이 아니라 `AUTH_ROLE_OWNER_01`로 별도 로그인한다(파일 안에서 두 번째 로그인 호출) —
-`AUTH_VALID_01`의 테넌트(`sample-store`)는 실 데모 테넌트라 영구 Catalog 데이터를 남기고 싶지 않고,
-`AUTH_ROLE_OWNER_01`의 테넌트(`e2e-auth-active`)는 실 고객이 0명인 합성 E2E 전용 테넌트라 영구히
-남아도 안전하기 때문이다(DB 직접 조회로 확인 완료). `AUTH_ROLE_OWNER_01`이 env에 없으면
+`SKIP_PRECONDITION`) — `QUEUE-003`과 같은 이유로 실제로 상태를 바꾸기 때문이다.
+
+> ~~과거 결정: `CATALOG-001`~`003`과 달리 `AUTH_VALID_01`이 아니라 `AUTH_ROLE_OWNER_01`로 별도
+> 로그인한다(파일 안에서 두 번째 로그인 호출) — `AUTH_VALID_01`의 테넌트(`sample-store`)는 실 데모
+> 테넌트라 영구 Catalog 데이터를 남기고 싶지 않고, `AUTH_ROLE_OWNER_01`의 테넌트
+> (`e2e-auth-active`)는 실 고객이 0명인 합성 E2E 전용 테넌트라 영구히 남아도 안전하기 때문이다
+> (DB 직접 조회로 확인 완료).~~
+
+2026-08-26 결정으로, 부트캠프 규모에서 별도 계정을 새로 요청하지 않고 이미 확보한
+`AUTH_ROLE_OWNER_01`(`e2e-auth-active`/`e2e-role-owner`)을 `AUTH_VALID_01` 역할까지 겸용한다. 코드상
+별칭과 두 번째 로그인 호출은 유지하지만 두 별칭은 같은 물리 계정과 Rate Limit Bucket을 공유한다.
+`AUTH_ROLE_OWNER_01`이 env에 없으면
 `auth-lockout-ratelimit.js`의 `if (!env.staticAccounts.lockout)`과 같은 패턴으로 세 케이스 모두
 `SKIP_PRECONDITION`.
 
@@ -309,40 +316,48 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 
 
 ## ⚠️ 계정 Rate Limit Bucket 주의
 
-`AUTH_VALID_01`(`sample-store`/`owner`) 계정의 서버측 Rate Limit Bucket은 **기본 용량 5회, 분당 1회 보충**이다.
+`AUTH_VALID_01`/`AUTH_ROLE_OWNER_01`(`e2e-auth-active`/`e2e-role-owner`)이 공유하는 서버측 계정 단위
+Rate Limit Bucket은 **기본 용량 5회, 분당 1회 보충**이다.
 이 저장소의 스크립트들은 실계정 로그인 호출 수를 아래처럼 최소화해뒀다.
 
-| 스크립트 | `AUTH_VALID_01` 로그인 호출 수 |
+| 스크립트 | 공유 물리 계정 로그인 호출 수 |
 |---|---|
 | `auth-mandatory.js` | 4회 (`AUTH-001`+`AUTH-002`+`AUTH-024` 병합 1회, `AUTH-003` 1회, `AUTH-004` 1회, `AUTH-010` 1회) |
 | `session-flow.js` | 3회 (`SESS-001`/`002`/`003`/`006` 공용 최초 로그인 1회 + `SESS-007` 내부의 사전 로그인·재로그인 2회) — `SESS-004`/`005`는 별도 정적 계정(`AUTH_TEMP_PASSWORD_01`/`AUTH_PASSWORD_ROTATE_01`)을 써서 이 Bucket을 건드리지 않는다 |
 | `queue-connectivity.js` | 1회 (`QUEUE-001`/`002` 공용 로그인) — `QUEUE-003`도 같은 로그인을 재사용해 추가 호출 없음 |
-| `catalog-connectivity.js` | 1회 (`CATALOG-001`~`003` 공용 로그인) — `CATALOG-004`~`006`은 `AUTH_VALID_01`이 아니라 `AUTH_ROLE_OWNER_01`로 별도 로그인해 이 Bucket을 전혀 건드리지 않는다(아래 참고) |
+| `catalog-connectivity.js` | 기본 1회(`CATALOG-001`~`003` 공용 로그인), `RUN_DESTRUCTIVE_CATALOG_TESTS=true`이면 2회(Tier B가 `AUTH_ROLE_OWNER_01` 별칭으로 1회 추가) |
 | `audit-sales-connectivity.js` | 1회 (`AUDIT-001`/`SALES-001` 공용 로그인) — 별도 프로세스라 Cookie Jar를 이어받지 못해 새 로그인이 필요하다(파일 상단 주석 참고) |
 | **`../browser` (Playwright) FE-BE-002~006** | 성공 로그인 여러 회 + 실패 로그인 1회 |
 
-**`AUTH_ROLE_OWNER_01`은 `AUTH_VALID_01`과 별개의 계정 단위 Rate Limit Bucket을 쓴다** — 서버측
-Bucket이 `(tenantCode, loginId)` 단위로 격리돼 있어(`AUTH-030`~`034`가 검증하는 것과 같은 계정
-단위 Bucket 구조), `CATALOG-004`~`006`이 `RUN_DESTRUCTIVE_CATALOG_TESTS=true`로 추가 로그인 1회를
-써도 위 표의 `AUTH_VALID_01` 소진 계산(3+1+1=5)에는 전혀 영향을 주지 않는다. 확인 결과 non-issue이며,
-`run-mandatory-gate.mjs`/`run-full-gate.mjs`의 기존 대기 로직을 바꿀 필요가 없다.
+> ~~과거 결정: `AUTH_ROLE_OWNER_01`은 `AUTH_VALID_01`과 별개의 계정 단위 Rate Limit Bucket을 쓴다.
+> Bucket이 `(tenantCode, loginId)` 단위로 격리돼 있어, `CATALOG-004`~`006`의 추가 로그인 1회는
+> `AUTH_VALID_01` 소진 계산(3+1+1=5)에 영향을 주지 않으며 기존 대기 로직을 바꿀 필요가 없다.~~
+
+2026-08-26 결정으로 두 별칭은 같은 `(tenantCode, loginId)`를 사용한다. 따라서 Full Gate에서
+`session-flow.js` 3회 + `queue-connectivity.js` 1회 + Catalog Tier A 1회 + Tier B 1회 = 6회가 되어
+기존 용량 5를 1회 초과한다. `run-mandatory-gate.mjs`는 `RUN_DESTRUCTIVE_CATALOG_TESTS=true`일 때만
+Queue 뒤에서 5분을 기다린다. 그 결과 대기 전에는 3+1=4회, 대기 후에는 Catalog 2회만 소비하며,
+Catalog 뒤의 기존 5분 대기 후 `audit-sales-connectivity.js`가 1회를 소비한다.
 
 **용량 5·분당 1회 보충인데 위 스크립트들을 합치면 한 번에 5를 훌쩍 넘는다 — 대기 없이 이어서
 돌리면 뒤에 실행되는 케이스가 실제 결함이 아닌 `429 AUTH_RATE_LIMITED`로 잘못 실패한다.** 이 문제는
 저장소 루트의 `scripts/run-mandatory-gate.mjs`(오케스트레이터)가 단계 사이에 Bucket이 완전히
-다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다 — `session-flow.js`(3회) 직후에는
-`queue-connectivity.js`(1회) → `catalog-connectivity.js`(1회)를 추가 대기 없이 바로 이어붙이는데,
-그 앞의 5분 대기로 Bucket이 5로 꽉 찬 상태에서 3+1+1=5로 정확히 맞춰뒀기 때문이다(그 사이에
-`AUTH_VALID_01` 로그인을 더 쓰는 단계를 끼워 넣으면 이 계산이 깨진다). `catalog-connectivity.js`
-뒤에는 `audit-sales-connectivity.js`(1회)를 이어붙이는데, 이 시점엔 이미 Bucket을 5까지 다 썼으므로
-그 사이에 다시 5분을 대기해 Bucket을 5로 채운 뒤 1만 쓰는 것으로 예산 계산이 리셋된다(그 뒤에 또
-`AUTH_VALID_01` 로그인 단계를 추가하려면 이 표와 `run-mandatory-gate.mjs`의 주석을 함께 갱신할 것).
+다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다. 파괴적 Catalog 플래그가 꺼진
+Mandatory Gate는 `session-flow.js`(3회) → `queue-connectivity.js`(1회) → Catalog Tier A(1회)를
+추가 대기 없이 이어붙여 3+1+1=5로 맞춘다. Full Gate에서 파괴적 Catalog 플래그가 켜지면 위에서
+설명한 조건부 5분 대기를 Queue와 Catalog 사이에 추가한다. `catalog-connectivity.js`
+뒤에는 항상 5분을 기다리고 `audit-sales-connectivity.js`(1회)를 이어붙인다. 비파괴 실행에서는
+Catalog까지 Bucket 5개를 모두 썼고, 파괴적 실행에서는 직전 조건부 대기 후 Catalog가 2개를 쓴
+상태다. 어느 경우든 이 기존 대기로 Bucket을 다시 5로 채운 뒤 Audit이 1개만 쓰게 된다(그 뒤에 또
+공유 계정 로그인 단계를 추가하려면 이 표와 `run-mandatory-gate.mjs`의 주석을 함께 갱신할 것).
 아래 예시처럼 손으로 직접 이어붙여 실행할 때만 다음 중 하나로 직접 대응해야 한다.
 
-- `auth-mandatory.js` → `session-flow.js` → `queue-connectivity.js` → `catalog-connectivity.js` →
-  (5분 대기) → `audit-sales-connectivity.js` → `browser` 순서로 실행하되, 괄호로 표시한 구간만
-  최소 5분 이상 간격을 두고 나머지는 위 설명대로 대기 없이 이어붙여도 정확히 용량 안에서 끝난다.
-- 반복 실행이 잦다면 dev 환경에서 `sample-store`/`owner` 전용으로 Rate Limit 용량을 늘리는 걸
+- 비파괴 수동 실행: `auth-mandatory.js` → (5분 대기) → `session-flow.js` →
+  `queue-connectivity.js` → `catalog-connectivity.js` → (5분 대기) →
+  `audit-sales-connectivity.js` 순서로 실행한다.
+- `RUN_DESTRUCTIVE_CATALOG_TESTS=true` 수동 실행: `session-flow.js` → `queue-connectivity.js` →
+  (5분 대기) → `catalog-connectivity.js` → (5분 대기) → `audit-sales-connectivity.js` 순서로 실행한다.
+- 반복 실행이 잦다면 dev 환경에서 `e2e-auth-active`/`e2e-role-owner` 전용으로 Rate Limit 용량을 늘리는 걸
   인프라팀에 요청한다(운영 계정에는 적용하지 않는다).
 - Client IP Bucket(기본 용량 30, 분당 6 보충)은 이 정도 호출량으로는 넉넉하므로 별도 조치 불필요.
 

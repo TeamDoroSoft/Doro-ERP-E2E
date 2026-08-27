@@ -5,9 +5,10 @@ import { record } from '../lib/resultLogger.js'
 
 // AUDIT-001, SALES-001 (Tier A) — 배포 Frontend–Backend 종단 검증.md §10 확장 서비스 연결성 검증.
 //
-// 왜 이 둘을 한 파일에 합쳤는가: run-mandatory-gate.mjs의 AUTH_VALID_01 Rate Limit Bucket 예산은
-// 이미 정확히 꽉 차 있다(용량 5 = session-flow.js 3회 + queue-connectivity.js 1회 +
-// catalog-connectivity.js 1회 — run-mandatory-gate.mjs 82~84행 주석 참고). k6는 runK6Scenario가
+// 왜 이 둘을 한 파일에 합쳤는가: 파괴적 Catalog 플래그가 꺼진 run-mandatory-gate.mjs의 공유 계정
+// Rate Limit Bucket 예산은 정확히 꽉 찬다(용량 5 = session-flow.js 3회 + queue-connectivity.js 1회
+// + catalog-connectivity.js Tier A 1회). 플래그가 켜지면 Queue 뒤의 조건부 5분 대기 후 Catalog
+// Tier A/B가 2회를 소비하고, 어느 경우든 Catalog 뒤에서 다시 5분을 기다린다. k6는 runK6Scenario가
 // 시나리오 파일마다 별도 프로세스로 실행하므로 프로세스 간 Cookie Jar 공유가 불가능하다 — 즉 새
 // 파일을 만들 때마다 그 파일 자신의 로그인이 최소 1회 필요하다. 파일을 2개(audit-connectivity.js,
 // sales-connectivity.js)로 나누면 로그인 2회가 추가로 필요해 waitForAuthValid01BucketRefill()
