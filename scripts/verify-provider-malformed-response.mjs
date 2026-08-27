@@ -283,10 +283,10 @@ function writeResult({ pass, faulted, recovered, restoredOk, noInternalLeak }) {
     artifacts: { failureScreenshot: null },
     errorClass: pass ? null : 'ASSERTION_MISMATCH',
   }
-  mkdirSync(reportsDir, { recursive: true })
-  const outPath = resolve(reportsDir, `${runId}.ops-002.results.jsonl`)
+  mkdirSync(resolve(reportsDir, runId), { recursive: true })
+  const outPath = resolve(reportsDir, runId, 'ops-002.results.jsonl')
   writeFileSync(outPath, `${JSON.stringify(record)}\n`, 'utf8')
-  console.log(`결과 기록: reports/${runId}.ops-002.results.jsonl`)
+  console.log(`결과 기록: reports/${runId}/ops-002.results.jsonl`)
 }
 
 main().catch((error) => {

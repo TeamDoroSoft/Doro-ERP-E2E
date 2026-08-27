@@ -13,9 +13,27 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 
 export const BROWSER_DIR = resolve(REPO_ROOT, 'browser')
 export const REPORTS_DIR = resolve(REPO_ROOT, 'reports')
 
+// UTC+9(Asia/Seoul, DST 없음) 고정 오프셋으로 KST 벽시계 값을 얻는다 — 이 매장/서비스 시간대
+// 전제를 쓰는 다른 코드(queue-connectivity.js의 storeNow() 등)와 같은 트릭이다. Node에는
+// Intl 시간대 지원이 있지만, 이 저장소 전반의 관례를 맞추고 나중에 goja(k6) 쪽에서 같은 값이
+// 필요해져도 그대로 옮겨 쓸 수 있게 동일한 방식을 쓴다.
+function kstTimestamp() {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000)
+  const pad = (n) => String(n).padStart(2, '0')
+  const y = kst.getUTCFullYear()
+  const mo = pad(kst.getUTCMonth() + 1)
+  const d = pad(kst.getUTCDate())
+  const h = pad(kst.getUTCHours())
+  const mi = pad(kst.getUTCMinutes())
+  const s = pad(kst.getUTCSeconds())
+  return `${y}-${mo}-${d}_${h}-${mi}-${s}`
+}
+
 export function ensureRunId() {
   if (!process.env.DORO_RUN_ID) {
-    process.env.DORO_RUN_ID = `run-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`
+    // KST 기준 사람이 읽기 쉬운 형식(예: run-2026-08-27_13-22-08) — Windows 폴더명에 `:`을
+    // 못 쓰므로 시:분:초 구분자는 하이픈으로 통일한다.
+    process.env.DORO_RUN_ID = `run-${kstTimestamp()}`
   }
   return process.env.DORO_RUN_ID
 }
@@ -76,9 +94,9 @@ export function runPlaywrightSpec(specFile) {
 // 빈 파일이 돼 모든 케이스가 "결과 0건"으로 잡히는 버그가 있었다. --console-output으로 k6가
 // 그 줄들을 직접 파일에 쓰게 해서 stdout/stderr 라우팅과 무관하게 만든다.
 export function runK6Scenario(scenarioRelPath, suiteName, caseIds) {
-  mkdirSync(REPORTS_DIR, { recursive: true })
   const runId = process.env.DORO_RUN_ID
-  const rawLogPath = resolve(REPORTS_DIR, `${runId}.${suiteName}.raw.log`)
+  mkdirSync(resolve(REPORTS_DIR, runId), { recursive: true })
+  const rawLogPath = resolve(REPORTS_DIR, runId, `${suiteName}.raw.log`)
 
   // 로컬 리허설(자체 서명 TLS) 대상일 때만 검증을 끈다 — 실 dev/stage/prod Origin은 유효한
   // 인증서를 쓰므로 이 플래그가 전혀 필요 없고, 붙이면 오히려 실 배포 검증을 약화시킨다
