@@ -1218,7 +1218,12 @@ async function registerEntryViaUi(page: Page, businessDate: string, partySize: n
 // 이어지지 않는 경우만 매칭하도록 정규식을 쓴다.
 async function cancelEntryRowViaUi(page: Page, entryId: string, queueNumber: number): Promise<number> {
   const row = page.locator('table tbody tr').filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
-  await row.waitFor({ state: 'visible', timeout: 10_000 })
+  // 실 배포 실측 결과 register() 직후 load(false)가 방금 만든 Entry를 목록에 반영하기까지
+  // 5~10초보다 훨씬 오래(약 15초 이상) 걸릴 수 있었다(queueNumber 발급용 Counter 자원의 갱신·전파
+  // 지연으로 추정 — 서버쪽 정확한 원인은 이 저장소 범위 밖). registerEntryViaUi 쪽에서 이미 18초를
+  // 기다렸는데도 여기로 온 경우(=아직 안 보였거나 registerEntryViaUi 자체가 실패해 처음 찾는
+  // 경우)를 위한 보조 대기라 test.setTimeout(45_000) 예산을 고려해 15초로 잡는다.
+  await row.waitFor({ state: 'visible', timeout: 15_000 })
   const [cancelResponse] = await Promise.all([
     page.waitForResponse(
       (res) =>
@@ -1259,12 +1264,18 @@ test('FE-BE-023 화면에서 입장 대기 등록 → 취소', async ({ page }) 
   // (순전한 UI 렌더링 확인)과는 독립시킨다. FE-BE-020이 겪은 것과 같은 이유로, 화면 확인이
   // 타이밍 문제로 실패해도 서버에는 이미 WAITING Entry가 생겼을 수 있어 정리는 반드시 시도해야 한다.
   const shouldAttemptCleanup = status === 201 && entryId !== ''
+  // Error Context 스냅샷 실측 결과 register() 직후 load(false)가 방금 만든 Entry를 목록에 반영
+  // 하기까지 15초 이상 걸린 사례가 있었다(FE-BE-020/022가 겪었던 몇백ms 수준의 렌더링 지연과는
+  // 다르게 더 긴 지연 — queueNumber 발급용 Counter 자원의 갱신·전파 지연으로 추정, 서버쪽 정확한
+  // 원인 확정은 이 저장소 범위 밖). 실측치(15초+)에 여유를 두고 18초로 늘린다 — 이 아래
+  // cancelEntryRowViaUi의 보조 대기(15초)와 로그인·등록에 걸리는 시간을 더해도
+  // test.setTimeout(45_000) 예산 안에 들어온다.
   const rowVisible =
     shouldAttemptCleanup && queueNumber !== null
       ? await page
           .locator('table tbody tr')
           .filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
-          .waitFor({ state: 'visible', timeout: 5_000 })
+          .waitFor({ state: 'visible', timeout: 18_000 })
           .then(() => true)
           .catch(() => false)
       : false
@@ -1293,6 +1304,30 @@ test('FE-BE-023 화면에서 입장 대기 등록 → 취소', async ({ page }) 
           `⚠ FE-BE-023이 만든 Entry(${entryId})를 정리(취소)하지 못했습니다 — 실 테넌트에 WAITING ` +
             `상태로 영구히 남아있을 수 있어 수동 확인이 필요합니다: ${apiError instanceof Error ? apiError.message : String(apiError)}`,
         )
+      }
+
+      // page.request.post()는 서버 상태만 CANCELLED로 바꿀 뿐, 이 화면이 들고 있는 Vue Reactive
+      // State(useEntryQueue의 queue.entries)는 그대로 WAITING으로 남는다 — 다음에 이 화면을 보는
+      // 사람이나 스냅샷이 실제 서버 상태와 다른 화면을 보고 혼선을 겪을 수 있다. EntryQueueView.vue의
+      // "새로고침" 버튼(search() → queue.load() 호출, :disabled="queue.loading.value ||
+      // !queue.businessDate.value" — businessDate는 registerEntryViaUi가 이미 채워둬서 비어있지
+      // 않고, 이 시점엔 진행 중인 load()도 없어 버튼이 활성화 상태다)을 눌러 화면 State를 서버와
+      // 맞춘다. 이미 검증(rowVisible/pass)이 끝난 뒤의 정리 단계라 여기서 실패해도 테스트 결과에는
+      // 영향을 주지 않는 best-effort로 처리한다.
+      if (cleanupCancelStatus === 200) {
+        try {
+          await Promise.all([
+            page.waitForResponse(
+              (res) => res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/queues/entry',
+            ),
+            page.getByRole('button', { name: '새로고침', exact: true }).click(),
+          ])
+        } catch (refreshError) {
+          console.error(
+            `⚠ FE-BE-023이 Fallback 취소 이후 화면 새로고침에 실패했습니다(서버 상태는 이미 정상 ` +
+              `취소됨): ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`,
+          )
+        }
       }
     }
   }
