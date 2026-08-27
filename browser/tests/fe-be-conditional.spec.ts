@@ -933,3 +933,455 @@ test('FE-BE-021 결제 시작 시 Toss 결제창 연동 확인', async ({ page, 
       `payButtonError=${payButtonError} cleanupCancelStatus=${cleanupCancelStatus}`,
   ).toBe(true)
 })
+
+// ---------------------------------------------------------------------------
+// FE-BE-023: 대기열 접수 화면 (Tier B, 파괴적) — RUN_DESTRUCTIVE_QUEUE_TESTS 필요
+//
+// api/scenarios/queue-connectivity.js의 QUEUE-003과 같은 API(POST /api/v1/queues/entry, POST
+// /api/v1/queues/entry/{entryId}/cancel — EdgeClosedBoundaryFilter.java의 isApprovedQueueRoute()에
+// 정규식으로 명시된 승인 Route 확인 완료)를 화면 조작으로 재현한다. QUEUE-003과 똑같이 이 Entry는
+// 실 테넌트 store+businessDate Counter의 queueNumber 1개를 영구히 소비하고 취소해도 CANCELLED 행이
+// 영구히 남는다 — 그래서 RUN_DESTRUCTIVE_QUEUE_TESTS=true 없이는 SKIP한다. AUTH_VALID_01을 그대로
+// 쓴다(QUEUE-003과 동일 — 대기열 등록/취소에는 Role 제한이 없다, EntryQueueController.java 확인 완료).
+// ---------------------------------------------------------------------------
+const DESTRUCTIVE_QUEUE_FLAG = 'RUN_DESTRUCTIVE_QUEUE_TESTS'
+
+// 영업일은 매장 Time Zone(Asia/Seoul, UTC+9)의 로컬 날짜다 — queue-connectivity.js의
+// todayBusinessDate()와 정확히 같은 이유·같은 계산 방식(한국은 DST가 없어 고정 +9시간 오프셋으로
+// 충분하다).
+const QUEUE_STORE_UTC_OFFSET_MINUTES = 9 * 60
+function todayBusinessDateKst(): string {
+  return new Date(Date.now() + QUEUE_STORE_UTC_OFFSET_MINUTES * 60 * 1000).toISOString().slice(0, 10)
+}
+
+interface RegisterEntryUiResult {
+  status: number
+  entryId: string
+  queueNumber: number | null
+  transportError: string | null
+}
+
+// EntryQueueView.vue/useEntryQueue.ts를 그대로 따른다 — 영업일(유일한 input[type=date])과
+// 인원수(유일한 input[type=number])를 채우고 "등록" 버튼을 누르면 register()가
+// POST /api/v1/queues/entry를 호출한다. 성공하면 register()가 곧바로 load(false)를 호출해 같은
+// 화면에서 목록이 갱신된다 — Route 이동이 전혀 없으므로 waitForURL은 쓰지 않는다.
+async function registerEntryViaUi(page: Page, businessDate: string, partySize: number): Promise<RegisterEntryUiResult> {
+  await page.goto('/pos/queues/entry')
+  await page.locator('input[type="date"]').fill(businessDate)
+  await page.locator('input[type="number"]').fill(String(partySize))
+
+  let registerResponse: Response | null = null
+  let transportError: string | null = null
+  try {
+    ;[registerResponse] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/queues/entry',
+      ),
+      page.getByRole('button', { name: '등록', exact: true }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const status = registerResponse?.status() ?? 0
+  let entryId = ''
+  let queueNumber: number | null = null
+  if (status === 201) {
+    const body = await registerResponse!.json().catch(() => null)
+    entryId = typeof body?.entryId === 'string' ? body.entryId : ''
+    queueNumber = typeof body?.queueNumber === 'number' ? body.queueNumber : null
+  }
+  return { status, entryId, queueNumber, transportError }
+}
+
+// 방금 만든 행("#{queueNumber}")을 찾아 그 행의 "취소" 버튼을 누른다. act('cancel')도 Route 이동
+// 없이 같은 화면에서 load(false)로 갱신한다 — OrderDetailPanel의 "주문 취소"와 달리 이 화면은
+// window.confirm()을 띄우지 않는다(EntryQueueView.vue 템플릿에 confirm 호출이 없음, 확인 완료).
+// queueNumber를 문자열로 그대로 매칭하면 "#3"이 "#30"에도 부분 일치할 수 있어 뒤에 숫자가 더
+// 이어지지 않는 경우만 매칭하도록 정규식을 쓴다.
+async function cancelEntryRowViaUi(page: Page, entryId: string, queueNumber: number): Promise<number> {
+  const row = page.locator('table tbody tr').filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
+  await row.waitFor({ state: 'visible', timeout: 10_000 })
+  const [cancelResponse] = await Promise.all([
+    page.waitForResponse(
+      (res) =>
+        res.request().method() === 'POST' &&
+        new URL(res.url()).pathname === `/api/v1/queues/entry/${entryId}/cancel`,
+    ),
+    row.getByRole('button', { name: '취소', exact: true }).click(),
+  ])
+  return cancelResponse.status()
+}
+
+test('FE-BE-023 화면에서 입장 대기 등록 → 취소', async ({ page }) => {
+  test.setTimeout(45_000)
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+
+  if (process.env[DESTRUCTIVE_QUEUE_FLAG] !== 'true') {
+    record({
+      testCaseId: 'FE-BE-023',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        `${DESTRUCTIVE_QUEUE_FLAG}=true로 명시하지 않으면 실행하지 않음 — 등록한 Entry를 취소해도 ` +
+        'store+businessDate Counter의 queueNumber 소비와 CANCELLED 행은 실 테넌트에 영구히 남는다' +
+        '(QUEUE-003과 같은 이유, 위 QUEUE-003 API 시나리오 주석 참고).',
+    })
+    return
+  }
+
+  await loginAsAuthValid01(page, env)
+  const businessDate = todayBusinessDateKst()
+  const partySize = 2
+  const { status, entryId, queueNumber, transportError } = await registerEntryViaUi(page, businessDate, partySize)
+
+  // 정리(취소) 시도 여부는 서버 상태(등록 응답 201 + entryId 확보)로만 판단한다 — 아래 rowVisible
+  // (순전한 UI 렌더링 확인)과는 독립시킨다. FE-BE-020이 겪은 것과 같은 이유로, 화면 확인이
+  // 타이밍 문제로 실패해도 서버에는 이미 WAITING Entry가 생겼을 수 있어 정리는 반드시 시도해야 한다.
+  const shouldAttemptCleanup = status === 201 && entryId !== ''
+  const rowVisible =
+    shouldAttemptCleanup && queueNumber !== null
+      ? await page
+          .locator('table tbody tr')
+          .filter({ hasText: new RegExp(`#${queueNumber}(?!\\d)`) })
+          .waitFor({ state: 'visible', timeout: 5_000 })
+          .then(() => true)
+          .catch(() => false)
+      : false
+  const registered = status === 201 && entryId !== '' && rowVisible
+  const pass = registered && !transportError
+
+  let cleanupCancelStatus = 0
+  if (shouldAttemptCleanup) {
+    try {
+      if (queueNumber === null) throw new Error('등록 응답 Body에서 queueNumber를 읽지 못했습니다')
+      cleanupCancelStatus = await cancelEntryRowViaUi(page, entryId, queueNumber)
+    } catch (uiError) {
+      // 화면에서 행을 찾거나 "취소" 버튼 클릭이 실패해도, Entry가 WAITING으로 영구히 방치되지
+      // 않도록 API를 직접 호출해 한 번 더 정리를 시도한다(QUEUE-003의 CSRF 실측 확인대로 대기열
+      // POST는 X-XSRF-TOKEN 없이도 통과한다 — catalog-connectivity.js 주석과 대조 확인 완료).
+      // page.request는 이 브라우저 Context의 로그인 Cookie를 그대로 공유한다.
+      console.error(
+        `⚠ FE-BE-023이 화면에서 Entry(${entryId}) 취소에 실패해 API를 직접 호출로 재시도합니다: ` +
+          (uiError instanceof Error ? uiError.message : String(uiError)),
+      )
+      try {
+        const fallbackRes = await page.request.post(`${env.apiOrigin}/api/v1/queues/entry/${entryId}/cancel`)
+        cleanupCancelStatus = fallbackRes.status()
+      } catch (apiError) {
+        console.error(
+          `⚠ FE-BE-023이 만든 Entry(${entryId})를 정리(취소)하지 못했습니다 — 실 테넌트에 WAITING ` +
+            `상태로 영구히 남아있을 수 있어 수동 확인이 필요합니다: ${apiError instanceof Error ? apiError.message : String(apiError)}`,
+        )
+      }
+    }
+  }
+
+  record({
+    testCaseId: 'FE-BE-023',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias: 'AUTH_VALID_01',
+    resultCode: transportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_UI',
+    expected: { requestPath: '/api/v1/queues/entry', httpStatus: 201 },
+    observed: { requestPath: '/api/v1/queues/entry', httpStatus: status },
+    assertions: {
+      entryRegistered: status === 201,
+      entryRowVisible: rowVisible,
+      cleanupCancelSucceeded: shouldAttemptCleanup && cleanupCancelStatus === 200,
+    },
+    browser: browserCounts(errors),
+    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_QUEUE_ENTRY_REGISTER_FAILED',
+  })
+
+  expect(
+    pass,
+    `FE-BE-023 실패: status=${status} entryId="${entryId}" rowVisible=${rowVisible} transportError=${transportError}`,
+  ).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// FE-BE-025: 카탈로그(분류·상품) 등록/수정 화면 (Tier B, 파괴적) — RUN_DESTRUCTIVE_CATALOG_TESTS 필요
+//
+// api/scenarios/catalog-connectivity.js의 CATALOG-004~006과 같은 API를 화면 조작으로 재현한다.
+// Category·Product 둘 다 DELETE Endpoint가 없어(CatalogCategoryController.java/
+// CatalogProductController.java 확인 완료) 생성한 자원은 영구히 남는다 — 그래서 정리는
+// "이용 중지"/"판매 중지" 토글로 active:false 전환까지만 시도한다(실제 삭제 아님). Category·Product
+// 생성/수정은 CatalogService.requireCatalogManager() → ActorRole.canManageCatalog()를 거쳐 OWNER·
+// MANAGER만 허용하고(CatalogManagementView.vue의 canManage와 정확히 같은 조건), CATALOG-004~006과
+// 같은 이유로 AUTH_VALID_01이 아니라 AUTH_ROLE_OWNER_01(합성 테넌트 e2e-auth-active)로 로그인한다 —
+// AUTH_VALID_01의 테넌트(sample-store)는 실 데모 테넌트라 영구 Catalog 데이터를 남기고 싶지 않다.
+// PATCH 요청의 If-Match(낙관적 잠금) 헤더는 Doro-ERP-Front/src/api/catalog.ts의 updateCategory()/
+// updateProduct()가 이미 자동으로 붙인다(ifMatch() 헬퍼, version을 그대로 따옴표로 감싸 전송) —
+// 화면을 그대로 조작하는 이 테스트는 별도로 헤더를 다룰 필요가 없다.
+// ---------------------------------------------------------------------------
+const DESTRUCTIVE_CATALOG_FLAG = 'RUN_DESTRUCTIVE_CATALOG_TESTS'
+
+interface CreateCategoryUiResult {
+  status: number
+  categoryId: string
+  transportError: string | null
+}
+
+// CatalogManagementView.vue/useCatalogManagement.ts를 그대로 따른다 — "분류 등록" 버튼(canManage일
+// 때만 노출)을 누르면 #category-editor 패널이 열리고, 분류명(#category-name)·표시 순서
+// (#category-order)를 채운 뒤 그 패널 안의 "저장" 버튼을 누르면 saveCategory()가
+// POST /api/v1/catalog/categories를 호출한다. 성공하면 목록을 다시 불러오고 editor를 자동으로
+// 닫는다 — Route 이동이 없으므로 waitForURL은 쓰지 않는다.
+async function createCategoryViaUi(page: Page, name: string): Promise<CreateCategoryUiResult> {
+  await page.getByRole('button', { name: '분류 등록' }).click()
+  await page.locator('#category-name').fill(name)
+  await page.locator('#category-order').fill('1')
+
+  let response: Response | null = null
+  let transportError: string | null = null
+  try {
+    ;[response] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/catalog/categories',
+      ),
+      page.locator('#category-editor').getByRole('button', { name: '저장' }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const status = response?.status() ?? 0
+  let categoryId = ''
+  if (status === 201) {
+    const body = await response!.json().catch(() => null)
+    categoryId = typeof body?.categoryId === 'string' ? body.categoryId : ''
+  }
+  return { status, categoryId, transportError }
+}
+
+interface CreateProductUiResult {
+  status: number
+  productId: string
+  transportError: string | null
+}
+
+// "상품 등록" 버튼은 canManage && selectedCategoryId일 때만 노출된다 — 호출부가 새로 만든 분류를
+// 미리 선택해둔 뒤(.category-select 클릭) 이 함수를 부른다. #product-editor 패널의 메뉴 분류
+// select에서 방금 만든 분류를 명시적으로 고르고, 상품명·가격을 채운 뒤 "저장"을 누르면
+// saveProduct()가 POST /api/v1/catalog/products를 호출한다.
+async function createProductViaUi(page: Page, categoryName: string, name: string): Promise<CreateProductUiResult> {
+  await page.getByRole('button', { name: '상품 등록' }).click()
+  await page.locator('#product-editor select').selectOption({ label: categoryName })
+  await page.getByLabel('상품명').fill(name)
+  await page.getByLabel('가격').fill('1000')
+
+  let response: Response | null = null
+  let transportError: string | null = null
+  try {
+    ;[response] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/catalog/products',
+      ),
+      page.locator('#product-editor').getByRole('button', { name: '저장' }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const status = response?.status() ?? 0
+  let productId = ''
+  if (status === 201) {
+    const body = await response!.json().catch(() => null)
+    productId = typeof body?.productId === 'string' ? body.productId : ''
+  }
+  return { status, productId, transportError }
+}
+
+interface DeactivateUiResult {
+  status: number
+  active: boolean | null
+}
+
+// "이용 중지" 토글(toggleCategory)은 PATCH /api/v1/catalog/categories/{id}에 {active:false}만
+// 보낸다 — CatalogService.updateCategory()가 부분 업데이트라 이 필드만 바뀐다(위 파일 상단 주석
+// 확인 완료).
+async function deactivateCategoryViaUi(page: Page, categoryId: string, categoryName: string): Promise<DeactivateUiResult> {
+  const row = page.locator('.category-list li').filter({ hasText: categoryName })
+  await row.waitFor({ state: 'visible', timeout: 10_000 })
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (res) => res.request().method() === 'PATCH' && new URL(res.url()).pathname === `/api/v1/catalog/categories/${categoryId}`,
+    ),
+    row.getByRole('button', { name: '이용 중지' }).click(),
+  ])
+  const body = await response.json().catch(() => null)
+  return { status: response.status(), active: typeof body?.active === 'boolean' ? body.active : null }
+}
+
+// "판매 중지" 토글(toggleProductActive)은 PATCH /api/v1/catalog/products/{id}에 {active:false}만
+// 보낸다 — "품절 처리"(toggleSoldOut, PATCH .../sold-out)와는 다른 필드·다른 Endpoint다(위 파일
+// 상단 주석에서 이 테스트가 다루는 대상을 "판매 중지"로 명시).
+async function deactivateProductViaUi(page: Page, productId: string, productName: string): Promise<DeactivateUiResult> {
+  const row = page.locator('.product-panel table tbody tr').filter({ hasText: productName })
+  await row.waitFor({ state: 'visible', timeout: 10_000 })
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (res) => res.request().method() === 'PATCH' && new URL(res.url()).pathname === `/api/v1/catalog/products/${productId}`,
+    ),
+    row.getByRole('button', { name: '판매 중지' }).click(),
+  ])
+  const body = await response.json().catch(() => null)
+  return { status: response.status(), active: typeof body?.active === 'boolean' ? body.active : null }
+}
+
+test('FE-BE-025 화면에서 메뉴 분류·상품 등록 → 이용/판매 중지', async ({ page }) => {
+  test.setTimeout(60_000)
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+
+  if (process.env[DESTRUCTIVE_CATALOG_FLAG] !== 'true') {
+    record({
+      testCaseId: 'FE-BE-025',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        `${DESTRUCTIVE_CATALOG_FLAG}=true로 명시하지 않으면 실행하지 않음 — Category·Product는 DELETE ` +
+        'Endpoint가 없어 생성하면 영구히 남는다(CATALOG-004~006과 같은 이유, 위 CATALOG-004~006 API 시나리오 주석 참고).',
+    })
+    return
+  }
+
+  const account = env.staticAccounts.roleOwner
+  if (!account) {
+    record({
+      testCaseId: 'FE-BE-025',
+      startedAt,
+      durationMs: 0,
+      accountAlias: 'AUTH_ROLE_OWNER_01',
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: 'AUTH_ROLE_OWNER_01 정적 계정 없음 — 합성 테넌트(e2e-auth-active) Fixture 준비 불가',
+    })
+    return
+  }
+
+  await page.goto('/pos/login')
+  await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
+  const loginResponse = await submitAndWaitLogin(page)
+  if (loginResponse.status() !== 200) {
+    record({
+      testCaseId: 'FE-BE-025',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_ROLE_OWNER_01',
+      resultCode: 'ERROR_TRANSPORT',
+      errorClass: `사전 로그인 실패 (status=${loginResponse.status()}) — FE-BE-025 전제조건 불충족`,
+    })
+    expect(false, `FE-BE-025 실패: 사전 로그인 실패 (status=${loginResponse.status()})`).toBe(true)
+    return
+  }
+  await page.waitForURL('**/pos/orders', { timeout: 10_000 })
+
+  await page.goto('/pos/catalog')
+  await page.getByRole('button', { name: '분류 등록' }).waitFor({ state: 'visible', timeout: 10_000 })
+
+  const suffix = randomToken().slice(0, 8)
+  const categoryName = `E2E-FEBE025-CAT-${suffix}`
+  const productName = `E2E-FEBE025-PROD-${suffix}`
+
+  const categoryResult = await createCategoryViaUi(page, categoryName)
+  const categoryCreated = categoryResult.status === 201 && categoryResult.categoryId !== ''
+
+  let categoryListed = false
+  let productResult: CreateProductUiResult = { status: 0, productId: '', transportError: null }
+  let productCreated = false
+  let productListed = false
+  let productDeactivate: DeactivateUiResult = { status: 0, active: null }
+  let categoryDeactivate: DeactivateUiResult = { status: 0, active: null }
+
+  if (categoryCreated) {
+    try {
+      categoryListed = await page
+        .locator('.category-list li')
+        .filter({ hasText: categoryName })
+        .waitFor({ state: 'visible', timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false)
+
+      // load() 이후 selectedCategoryId가 기존 분류(테넌트에 이미 있을 수 있는 CATALOG-004~006
+      // 잔여물 포함)로 자동 재설정될 수 있어, 방금 만든 분류를 명시적으로 선택해야 "상품 등록"
+      // 버튼이 이 분류 아래에서 열린다.
+      await page.locator('.category-list li').filter({ hasText: categoryName }).locator('.category-select').click()
+
+      productResult = await createProductViaUi(page, categoryName, productName)
+      productCreated = productResult.status === 201 && productResult.productId !== ''
+
+      if (productCreated) {
+        productListed = await page
+          .locator('.product-panel table tbody tr')
+          .filter({ hasText: productName })
+          .waitFor({ state: 'visible', timeout: 5_000 })
+          .then(() => true)
+          .catch(() => false)
+      }
+    } finally {
+      // 정리(cleanup) 시도 여부는 서버 상태(생성 응답 201 + id 확보)로만 판단한다 — 위
+      // categoryListed/productListed(순전한 UI 렌더링 확인)와는 독립시킨다. DELETE Endpoint가
+      // 없으므로 정리는 active:false 전환까지만 가능하다(실제 삭제 아님) — QUEUE-003/
+      // CATALOG-004~006과 같은 "정리는 되지만 이력은 영구 잔존" 패턴.
+      if (productCreated) {
+        try {
+          productDeactivate = await deactivateProductViaUi(page, productResult.productId, productName)
+        } catch (error) {
+          console.error(
+            `⚠ FE-BE-025가 만든 상품(${productResult.productId})을 정리(판매 중지)하지 못했습니다 — ` +
+              `실 테넌트에 판매 중 상태로 영구히 남아있을 수 있어 수동 확인이 필요합니다: ` +
+              (error instanceof Error ? error.message : String(error)),
+          )
+        }
+      }
+      try {
+        categoryDeactivate = await deactivateCategoryViaUi(page, categoryResult.categoryId, categoryName)
+      } catch (error) {
+        console.error(
+          `⚠ FE-BE-025가 만든 분류(${categoryResult.categoryId})를 정리(이용 중지)하지 못했습니다 — ` +
+            `실 테넌트에 운영 중 상태로 영구히 남아있을 수 있어 수동 확인이 필요합니다: ` +
+            (error instanceof Error ? error.message : String(error)),
+        )
+      }
+    }
+  }
+
+  const productDeactivatedOk = productDeactivate.status === 200 && productDeactivate.active === false
+  const categoryDeactivatedOk = categoryDeactivate.status === 200 && categoryDeactivate.active === false
+  const transportError = categoryResult.transportError ?? productResult.transportError
+  const pass =
+    categoryCreated && categoryListed && productCreated && productListed && productDeactivatedOk && categoryDeactivatedOk && !transportError
+
+  record({
+    testCaseId: 'FE-BE-025',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias: 'AUTH_ROLE_OWNER_01',
+    resultCode: transportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_UI',
+    expected: { requestPath: '/api/v1/catalog/categories', httpStatus: 201 },
+    observed: { requestPath: '/api/v1/catalog/categories', httpStatus: categoryResult.status },
+    assertions: {
+      categoryCreated,
+      categoryListed,
+      productCreated,
+      productListed,
+      productDeactivatedOk,
+      categoryDeactivatedOk,
+    },
+    browser: browserCounts(errors),
+    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_CATALOG_REGISTER_OR_DEACTIVATE_FAILED',
+  })
+
+  expect(
+    pass,
+    `FE-BE-025 실패: categoryStatus=${categoryResult.status} categoryId="${categoryResult.categoryId}" ` +
+      `productStatus=${productResult.status} productId="${productResult.productId}" ` +
+      `productDeactivatedOk=${productDeactivatedOk} categoryDeactivatedOk=${categoryDeactivatedOk}`,
+  ).toBe(true)
+})
