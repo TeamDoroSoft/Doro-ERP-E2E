@@ -36,6 +36,7 @@
 // 남긴다. 다만 이것도 완전히 결정적이진 않다 — 대체 Pod가 첫 poll 이전에 이미 Ready가 됐다면
 // 이 방법으로도 "단독 Pod 구간"을 잡아내지 못한다. observedSinglePodWindow는 진단용 참고
 // 정보일 뿐 PASS/FAIL 판정에는 영향을 주지 않는다.
+import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -103,12 +104,13 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 
 async function loginProbe() {
   try {
+    const tenantCode = `ops-005-probe-${randomUUID().replaceAll('-', '').slice(0, 10)}`
     const res = await fetchWithTimeout(
       `${EDGE_ORIGIN}/api/v1/auth/login`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenantCode: 'ops-005-probe', loginId: 'probe', password: 'probe' }),
+        body: JSON.stringify({ tenantCode, loginId: 'probe', password: 'probe' }),
       },
       5000,
     )

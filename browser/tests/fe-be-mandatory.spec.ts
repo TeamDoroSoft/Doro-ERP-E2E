@@ -398,3 +398,172 @@ test('FE-BE-006 Frontend에서 로그아웃', async ({ page }) => {
     `FE-BE-006 실패: csrf=${csrfHeaderPresent} logoutOk=${logoutOk} redirected=${redirectedToLogin} protectedRejected=${protectedRejected} backBlocked=${backBlocked}`,
   ).toBe(true)
 })
+
+// ---------------------------------------------------------------------------
+// FE-BE-022: 일별 매출 조회 (Tier A, 비파괴) — 주문 생성/결제(FE-BE-020/021, fe-be-conditional.spec.ts)와
+// 함께 검토된 세 번째 화면 여정이지만, 이 케이스는 조회 전용이라 파괴적이지 않다. 영업일
+// 마감(POST /sales/daily/{date}/close)은 되돌릴 Endpoint가 없는 회계 확정 동작이라(README.md
+// "미구현 항목 설명" D 참고) 이 테스트는 조회(GET /sales/daily)만 검증하고, 마감 버튼에는
+// 존재 확인 목적의 클릭을 포함해 어떤 방식으로도 상호작용하는 코드를 두지 않는다.
+// ---------------------------------------------------------------------------
+const KST_OFFSET_MINUTES = 9 * 60
+const KST_MIDNIGHT_SKIP_WINDOW_MINUTES = 5
+
+// api/scenarios/audit-sales-connectivity.js의 storeNow()/todayBusinessDate()/isNearKstMidnight()와
+// 동일한 UTC+9 고정 오프셋 트릭(그 파일 79~104행 참고) — AUTH_ROLE_MANAGER_01/OWNER_01 소속 매장이
+// Asia/Seoul(UTC+9, DST 없음)이라는 같은 전제. GET /api/v1/sales/daily도
+// SalesService.requireCurrentBusinessDate()가 서버가 계산한 "오늘"과 정확히 일치해야 통과시키므로
+// (다르면 409) 같은 자정 경계 회피 로직이 필요하다.
+function kstNow(): Date {
+  return new Date(Date.now() + KST_OFFSET_MINUTES * 60 * 1000)
+}
+function todayBusinessDateKst(): string {
+  return kstNow().toISOString().slice(0, 10)
+}
+function isNearKstMidnight(): boolean {
+  const now = kstNow()
+  const minutesSinceMidnight = now.getUTCHours() * 60 + now.getUTCMinutes()
+  const minutesToNextMidnight = 24 * 60 - minutesSinceMidnight
+  return (
+    minutesSinceMidnight < KST_MIDNIGHT_SKIP_WINDOW_MINUTES ||
+    minutesToNextMidnight <= KST_MIDNIGHT_SKIP_WINDOW_MINUTES
+  )
+}
+
+test('FE-BE-022 일별 매출 조회', async ({ page }) => {
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+
+  // AUTH_ROLE_MANAGER_01을 우선 쓴다 — AUTH_ROLE_OWNER_01은 2026-08-26 결정으로 AUTH_VALID_01과
+  // 같은 물리 계정·같은 Rate Limit Bucket을 공유한다(api/README.md "⚠️ 계정 Rate Limit Bucket
+  // 주의" 참고). 이 파일의 FE-BE-001~006이 이미 그 Bucket을 여러 번 쓴 직후 이어서 로그인하면
+  // 429로 잘못 실패할 위험이 있다 — MANAGER는 별개 물리 계정이라 이 위험이 없으므로 준비돼
+  // 있으면 항상 먼저 쓰고, 없을 때만 OWNER로 폴백한다.
+  const usingManager = env.staticAccounts.roleManager !== null
+  const account = env.staticAccounts.roleManager ?? env.staticAccounts.roleOwner
+  if (!account) {
+    record({
+      testCaseId: 'FE-BE-022',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        'AUTH_ROLE_MANAGER_01/AUTH_ROLE_OWNER_01 정적 계정이 모두 없음 — 매출 조회 화면 접근 전제 불충족',
+    })
+    return
+  }
+
+  if (isNearKstMidnight()) {
+    record({
+      testCaseId: 'FE-BE-022',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        '자정 경계 근처 실행 회피 — audit-sales-connectivity.js의 SALES-001과 같은 이유' +
+        '(SalesService.requireCurrentBusinessDate() 불일치로 인한 409 오탐 방지)',
+    })
+    return
+  }
+
+  await page.goto('/pos/login')
+  await page.locator('input[name="tenantCode"]').fill(account.tenantCode)
+  await page.locator('input[name="loginId"]').fill(account.loginId)
+  await page.locator('input[name="password"]').fill(account.password)
+
+  let loginResponse: Response | null = null
+  let transportError: string | null = null
+  try {
+    ;[loginResponse] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/auth/login',
+      ),
+      page.locator('button.submit-button').click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const loginStatus = loginResponse?.status() ?? 0
+  const loginOk = loginStatus === 200
+  const accountAlias = usingManager ? 'AUTH_ROLE_MANAGER_01' : 'AUTH_ROLE_OWNER_01'
+  if (!loginOk) {
+    record({
+      testCaseId: 'FE-BE-022',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias,
+      resultCode: transportError ? 'ERROR_TRANSPORT' : 'FAIL_UI',
+      expected: { requestPath: '/api/v1/auth/login', httpStatus: 200 },
+      observed: { requestPath: '/api/v1/auth/login', httpStatus: loginStatus },
+      assertions: { loginSucceeded: false },
+      browser: browserCounts(errors),
+      errorClass: transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_RESPONSE_MAPPING_FAILED',
+    })
+    expect(
+      loginOk,
+      `FE-BE-022 실패: 사전 로그인 실패 status=${loginStatus} transportError=${transportError}`,
+    ).toBe(true)
+    return
+  }
+  await page.waitForURL('**/pos/orders', { timeout: 10_000 }).catch(() => {})
+
+  const businessDate = todayBusinessDateKst()
+  await page.goto('/pos/sales')
+  await page.locator('input[type="date"]').fill(businessDate)
+
+  let salesResponse: Response | null = null
+  try {
+    ;[salesResponse] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/sales/daily',
+      ),
+      page.getByRole('button', { name: '조회' }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const salesStatus = salesResponse?.status() ?? 0
+  const salesOk = salesStatus === 200
+  // waitForResponse는 응답 헤더 도착 시점에만 resolve된다 — 그 뒤 Vue가 loading.value=false로
+  // 바꾸고 <table class="sales-table">를 실제로 그리기까지는 한 tick 이상의 시간차가 있다.
+  // isVisible()은 그 순간 한 번만 확인하는 non-retrying API라 이 시간차를 못 버티고 오탐 FAIL을
+  // 낼 수 있으므로, errorLocator와 동일하게(예: 93행) auto-retrying waitFor로 렌더링을 기다린다.
+  const tableVisible = salesOk
+    ? await page
+        .locator('table.sales-table')
+        .waitFor({ state: 'visible', timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false)
+    : false
+  const rowCount = tableVisible ? await page.locator('table.sales-table tbody tr').count() : 0
+  // 승인 금액·취소 금액·순매출·완료 주문·취소 주문 5개 행이 항상 렌더링된다(SalesClosingView.vue의
+  // amountRows() 3행 + 고정 2행 — 실제 소스 확인 완료). 영업일 마감 Button(session.canDoDailyClosing)은
+  // 이 판정에도, 이 테스트 어디에도 등장하지 않는다.
+  const pass = salesOk && tableVisible && rowCount === 5
+
+  record({
+    testCaseId: 'FE-BE-022',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias,
+    resultCode: transportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_UI',
+    expected: { requestPath: '/api/v1/sales/daily', httpStatus: 200 },
+    observed: { requestPath: '/api/v1/sales/daily', httpStatus: salesStatus },
+    requestId: salesResponse?.headers()['x-request-id'] ?? '',
+    assertions: {
+      salesQuerySucceeded: salesOk,
+      salesTableVisible: tableVisible,
+      salesRowsRendered: rowCount === 5,
+    },
+    browser: browserCounts(errors),
+    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_RESPONSE_MAPPING_FAILED',
+  })
+
+  expect(
+    pass,
+    `FE-BE-022 실패: salesStatus=${salesStatus} tableVisible=${tableVisible} rowCount=${rowCount} transportError=${transportError}`,
+  ).toBe(true)
+})

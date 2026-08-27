@@ -2,6 +2,12 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { DeployEnv } from './env'
 import { reportPath } from './resultLogger'
 
+// FE-BE-022(일별 매출 조회)는 fe-be-mandatory.spec.ts에서 항상 실행되지만 이 목록에는 넣지
+// 않는다 — AUTH-015/SALES-001을 run-mandatory-gate.mjs의 mandatoryIds에서 뺀 것과 같은 이유로,
+// AUTH_ROLE_MANAGER_01/OWNER_01 정적 계정 부재(SKIP_PRECONDITION) 또는 KST 자정 경계 회피
+// (마찬가지로 SKIP_PRECONDITION)가 실제 결함이 아닌데도 mandatoryBrowserPassed 전체를 실패로
+// 만들면 안 되기 때문이다(mandatoryBrowserPassed는 "전부 PASS"를 요구해 SKIP도 실패로 친다).
+// FE-BE-022 자체 결과는 그대로 실행·기록되며, 이 좁은 판정에서만 빠진다.
 const MANDATORY_IDS = ['FE-BE-001', 'FE-BE-002', 'FE-BE-003', 'FE-BE-004', 'FE-BE-005', 'FE-BE-006']
 
 interface StoredResult {

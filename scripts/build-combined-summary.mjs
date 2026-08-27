@@ -127,15 +127,29 @@ const sensitiveDataLeakCount =
 const protectedApiCase = browserCases.find((result) => result.testCaseId === 'FE-BE-003')
 const protectedApiReachedFromBrowser = protectedApiCase ? protectedApiCase.resultCode === 'PASS' : null
 
+// FE-BE-005/006은 배포 Frontend–Backend 종단 검증.md §3이 정의한 정상 동작 자체가 Browser
+// 계측에 에러로 잡힌다 — FE-BE-005(잘못된 비밀번호)는 401 응답이 콘솔 네트워크 에러로 남고,
+// FE-BE-006(로그아웃)은 로그아웃 후 보호 API가 실제로 거절되는지 확인하는 과정 자체가
+// failedRequiredRequestCount를 1 올린다. 둘 다 각 케이스 자체의 assertions는 전부 PASS다.
+// 여기 적은 값을 "초과"하는 에러는 여전히 실제 결함으로 걸러야 하므로 케이스 전체를 건너뛰지
+// 않고 필드별 허용치만 둔다.
+const EXPECTED_BROWSER_ERROR_COUNTS = {
+  'FE-BE-005': { consoleErrorCount: 1, pageErrorCount: 0, failedRequiredRequestCount: 0 },
+  'FE-BE-006': { consoleErrorCount: 0, pageErrorCount: 0, failedRequiredRequestCount: 1 },
+}
+const NO_EXPECTED_BROWSER_ERRORS = { consoleErrorCount: 0, pageErrorCount: 0, failedRequiredRequestCount: 0 }
+
 const browserLayerCases = browserCases.filter((result) => result.layer === 'FRONTEND_E2E')
 const browserErrorsAbsent =
   browserLayerCases.length > 0
-    ? browserLayerCases.every(
-        (result) =>
-          result.browser?.consoleErrorCount === 0 &&
-          result.browser?.pageErrorCount === 0 &&
-          result.browser?.failedRequiredRequestCount === 0,
-      )
+    ? browserLayerCases.every((result) => {
+        const allowed = EXPECTED_BROWSER_ERROR_COUNTS[result.testCaseId] ?? NO_EXPECTED_BROWSER_ERRORS
+        return (
+          (result.browser?.consoleErrorCount ?? 0) <= allowed.consoleErrorCount &&
+          (result.browser?.pageErrorCount ?? 0) <= allowed.pageErrorCount &&
+          (result.browser?.failedRequiredRequestCount ?? 0) <= allowed.failedRequiredRequestCount
+        )
+      })
     : null
 
 const REQUEST_CORRELATION_CASE_IDS = new Set(['FE-BE-002', 'FE-BE-003', 'FE-BE-004', 'FE-BE-005', 'FE-BE-006'])
@@ -193,7 +207,8 @@ caveats.push(
     '"필수 케이스 전부 PASS + 민감정보 유출 0건"만 보는 좁은 판정이며 같은 문서 §9의 완료 조건 전체를 대체하지 않는다.',
 )
 caveats.push(
-  'browserErrorsAbsent는 승인된 에러 허용 목록 개념이 아직 없어 console/page/required-request 에러가 하나라도 있으면 false로 엄격 판정한다.',
+  'browserErrorsAbsent는 FE-BE-005(consoleErrorCount<=1)/FE-BE-006(failedRequiredRequestCount<=1)만 ' +
+    '허용 목록으로 두고, 그 외 케이스나 그 이상의 초과분은 여전히 false로 엄격 판정한다.',
 )
 caveats.push(
   'requestCorrelationVerified는 FE-BE-002~006 Browser 결과의 requestId 존재 여부만 확인하는 좁은 대리 지표이며, Browser 응답과 Edge·Store Access Log를 실제로 대조하지 않는다.',

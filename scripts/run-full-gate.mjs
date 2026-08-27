@@ -35,6 +35,9 @@
 // AUTH-030처럼 별도 시나리오 파일·별도 runK6Scenario 호출을 새로 두지 않는다 — 그렇게 하면
 // QUEUE-001/002 로그인과 QUEUE-003 등록·취소가 중복 실행되어 AUTH_VALID_01 Bucket을 불필요하게
 // 더 쓰고, 실 테넌트에 취소된 Entry가 한 번 더 남는다. 대신 아래 "QUEUE-003" 단계는 안내만 출력한다.
+// 같은 RUN_DESTRUCTIVE_QUEUE_TESTS 플래그를 FE-BE-023(대기열 접수 화면, tests/fe-be-conditional.spec.ts)도
+// 그대로 읽는다 — 그 케이스는 k6가 아니라 아래 "FE-BE-010~015,020,021,023~027" Playwright 단계 안에서
+// 함께 돈다(별도 안내 불필요 — 그 단계가 이미 guardFlag로 이 플래그 상태를 출력한다).
 //
 // CATALOG-004~006(§10 Tier B)도 정확히 같은 구조·같은 이유다 — api/scenarios/catalog-connectivity.js
 // 한 파일 안에 CATALOG-001~003(Tier A)과 CATALOG-004~006(Tier B, RUN_DESTRUCTIVE_CATALOG_TESTS=true일
@@ -44,7 +47,9 @@
 // 겹치는 이름의 Category·Product가 한 번 더 영구히 남는다. 아래 "CATALOG-004~006" 단계도 안내만
 // 출력한다. 2026-08-26부터 AUTH_VALID_01과 AUTH_ROLE_OWNER_01은 같은 물리 계정과 Rate Limit
 // Bucket을 공유한다. runMandatoryGate()는 이 플래그가 켜졌을 때 QUEUE 단계 뒤에서 5분을 추가로
-// 기다린 뒤 Catalog의 Tier A 로그인 1회와 Tier B 로그인 1회를 실행한다.
+// 기다린 뒤 Catalog의 Tier A 로그인 1회와 Tier B 로그인 1회를 실행한다. 같은 RUN_DESTRUCTIVE_CATALOG_TESTS
+// 플래그를 FE-BE-025(카탈로그 등록/수정 화면)도 그대로 읽는다 — QUEUE-003/FE-BE-023과 같은 이유로
+// Playwright 조건부 시나리오 단계 안에서 함께 돈다.
 import { pathToFileURL } from 'node:url'
 import { runMandatoryGate } from './run-mandatory-gate.mjs'
 import { runStep, guardFlag, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
@@ -93,11 +98,38 @@ export async function runFullGate() {
   )
 
   steps.push(
-    await runStep('FE-BE-010~015 (Playwright 조건부 시나리오)', () => {
+    await runStep('FE-BE-010~015,020,021,023~027 (Playwright 조건부 시나리오)', () => {
       guardFlag(
         'RUN_FAULT_INJECTION_TESTS',
         'FE-BE-012(Provider 장애 주입)',
         'RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 (나머지 FE-BE-010/011/013/014/015는 이 플래그와 무관하게 각자 Fixture 유무로 실행/SKIP됩니다).',
+      )
+      // FE-BE-020(주문 생성·화면 취소)/021(결제 시작)/024(PENDING 결제 복구)도 같은
+      // 파일(tests/fe-be-conditional.spec.ts) 안에 있다 —
+      // 주문 취소 API가 소프트 취소라 order_status_history에 생성·취소 이력이 영구히 남기 때문에
+      // (QUEUE-003/CATALOG-004~006과 같은 이유) 이 플래그 없이는 SKIP_PRECONDITION으로 끝난다.
+      guardFlag(
+        'RUN_DESTRUCTIVE_ORDER_TESTS',
+        'FE-BE-020/021/024(주문 생성·결제 시작·PENDING 복구)',
+        'RUN_DESTRUCTIVE_ORDER_TESTS=true를 export한 뒤 다시 실행하세요.',
+      )
+      // FE-BE-023(대기열 접수 화면)도 같은 파일 안에 있다 — 위 QUEUE-003과 정확히 같은 이유로
+      // (등록·취소해도 queueNumber 소비와 CANCELLED 행이 실 테넌트에 영구히 남음) 이 플래그
+      // 없이는 SKIP_PRECONDITION으로 끝난다. QUEUE-003(k6)과 FE-BE-023(Playwright)은 각자
+      // 독립적으로 이 플래그를 읽고 각자 별도의 Entry를 등록·취소한다 — 서로 중복 호출하지 않는다.
+      guardFlag(
+        'RUN_DESTRUCTIVE_QUEUE_TESTS',
+        'FE-BE-023(대기열 접수 화면)',
+        'RUN_DESTRUCTIVE_QUEUE_TESTS=true를 export한 뒤 다시 실행하세요.',
+      )
+      // FE-BE-025(카탈로그 등록/수정 화면)도 같은 파일 안에 있다 — 위 CATALOG-004~006과 정확히
+      // 같은 이유로(DELETE Endpoint가 없어 생성한 Category·Product가 영구히 남음) 이 플래그
+      // 없이는 SKIP_PRECONDITION으로 끝난다. CATALOG-004~006(k6)과 FE-BE-025(Playwright)는 각자
+      // 독립적으로 이 플래그를 읽고 각자 별도 이름의 Category·Product를 생성한다.
+      guardFlag(
+        'RUN_DESTRUCTIVE_CATALOG_TESTS',
+        'FE-BE-025(카탈로그 등록/수정 화면)',
+        'RUN_DESTRUCTIVE_CATALOG_TESTS=true를 export한 뒤 다시 실행하세요.',
       )
       return runPlaywrightSpec('tests/fe-be-conditional.spec.ts')
     }),
@@ -148,6 +180,18 @@ export async function runFullGate() {
         return runNodeScript('scripts/run-fault-injection.mjs', [opsId, '--confirm'])
       }),
     )
+  }
+
+  if (
+    process.env.RUN_DESTRUCTIVE_AUTH_TESTS === 'true' &&
+    !isLocalRehearsal &&
+    process.env.RUN_FAULT_INJECTION_TESTS === 'true'
+  ) {
+    console.log(
+      '  ⏳ AUTH-034(방금 실행됨)가 Client-IP Rate Limit Bucket을 소진시켰습니다 — ' +
+        'OPS-002의 사전 401 판정이 429로 오염되지 않도록 완전히 보충되는 5분 동안 대기합니다.',
+    )
+    await new Promise((r) => setTimeout(r, 5 * 60 * 1000))
   }
 
   steps.push(

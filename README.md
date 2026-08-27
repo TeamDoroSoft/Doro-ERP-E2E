@@ -185,6 +185,78 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 (`AUTH_TEMP_PASSWORD_01`, `AUTH_ROLE_OWNER_01`/`MANAGER_01`/`STAFF_01`) 전제로 코드가 바뀌어서
 아직 실행 검증 전이다.
 
+**주문·결제·매출·운영 이력 화면 여정(`FE-BE-020`~`027`)도 추가했다** — 로그인 후 실제 화면
+조작→결과 확인까지 이어지는 브라우저 여정이라는 점에서 `FE-BE-001`~`006`/`010`~`015`(로그인·세션
+도메인에 국한)와 다른 도메인을 다룬다.
+
+| ID | Tier | 시나리오 | 구현 위치 |
+|---|---|---|---|
+| `FE-BE-020` | B | 로그인 → 신규 주문 화면(`/pos/orders/new`)에서 메뉴 1개 담기 → 주문 등록 → 주문 상세 화면에서 "주문 취소" 클릭 → `취소` 상태 표시 확인 | `browser/tests/fe-be-conditional.spec.ts`(`RUN_DESTRUCTIVE_ORDER_TESTS=true` 필요) |
+| `FE-BE-021` | B | `FE-BE-020`과 같은 방식으로 새 주문을 만든 뒤 "결제하기" 클릭 → 결제(Payment) `PENDING` 생성 확인 → Toss 결제창이 실제로 열리기 시작하는 신호(새 Page 또는 `tosspayments.com` iframe)까지만 확인 | `browser/tests/fe-be-conditional.spec.ts`(`RUN_DESTRUCTIVE_ORDER_TESTS=true` 필요) |
+| `FE-BE-022` | A | `AUTH_ROLE_MANAGER_01`(우선) 또는 `AUTH_ROLE_OWNER_01` 로그인 → 매출·마감 화면(`/pos/sales`)에서 오늘 영업일 조회 → 매출 표(5행) 렌더링 확인 | `browser/tests/fe-be-mandatory.spec.ts` |
+| `FE-BE-023` | B | `AUTH_VALID_01` 로그인 → 입장 대기 화면(`/pos/queues/entry`)에서 영업일·인원수 입력 → 등록(`WAITING` 행 확인) → 그 행 "취소" 클릭(`CANCELLED` 확인) | `browser/tests/fe-be-conditional.spec.ts`(`RUN_DESTRUCTIVE_QUEUE_TESTS=true` 필요) |
+| `FE-BE-024` | B | 새 주문에서 결제 `PENDING` 생성 → 주문 상세를 새로 탐색 → 기존 결제 조회와 "결제 계속하기" 복구 확인 → 결제 생성 `POST`가 중복 호출되지 않았는지 확인 | `browser/tests/fe-be-conditional.spec.ts`(`RUN_DESTRUCTIVE_ORDER_TESTS=true` 필요) |
+| `FE-BE-025` | B | `AUTH_ROLE_OWNER_01` 로그인 → 분류·상품 등록 → 각각 수정 → 상품 품절 `true→false` 왕복 → 상품 "판매 중지"/분류 "이용 중지"로 정리 확인 | `browser/tests/fe-be-conditional.spec.ts`(`RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) |
+| `FE-BE-026` | A | `AUTH_ROLE_MANAGER_01`(우선) 또는 `AUTH_ROLE_OWNER_01` 로그인 → 운영 이력 목록 또는 빈 상태 확인 → 목록이 있으면 첫 변경 기록 상세 조회 확인 | `browser/tests/fe-be-conditional.spec.ts` |
+| `FE-BE-027` | A | `AUTH_ROLE_MANAGER_01`(우선) 또는 `AUTH_ROLE_OWNER_01` 로그인 → 운영 이력 화면의 "로그인·보안 기록" 탭 → 목록 또는 빈 상태 확인 | `browser/tests/fe-be-conditional.spec.ts` |
+
+- `FE-BE-020`/`021`/`024`를 `RUN_DESTRUCTIVE_ORDER_TESTS=true`가 있어야만 실행되는 파괴적(Tier B)
+  항목으로 분류한 이유: 주문 취소 API(`POST /api/v1/orders/{orderId}/cancel`, 실제 존재 확인
+  완료 — `Doro-ERP-Service`의 `EdgeOrderController.java`→`OrderController.java`→
+  `OrderService.cancel()`)는 `DELETE`가 아니라 상태만 `CANCELLED`로 바꾸는 소프트 취소이고,
+  `order_status_history`에 생성·취소 이력이 영구히 남는다 — `QUEUE-003`/`CATALOG-004`~`006`과
+  같은 "정리는 되지만 이력은 영구 잔존" 패턴이다. `FE-BE-020`은 화면 취소와 취소 상태 표시가
+  PASS 조건이고, `FE-BE-021`/`024`는 테스트 마지막에 이 취소 API로 정리를 시도한다. 정리에
+  성공해도 이력 자체는 남고, `FE-BE-021`처럼
+  결제가 이미 `PENDING`으로 생성된 뒤에는 이 취소 호출이 `409`로 거절될 수 있다(그 경우 실
+  테넌트에 `CREATED` 주문과 `PENDING` 결제가 영구히 남는다 — 이 케이스는 실행 검증 전이라 실제로
+  거절되는지 아직 확인하지 못했다).
+- `FE-BE-021`은 Toss 결제창 내부(카드사 선택, 약관 동의, 승인 버튼 등)까지는 자동화하지 않는다 —
+  `Doro-ERP-Front/src/payments/tossPayment.ts`가 `@tosspayments/tosspayments-sdk`로 원격
+  스크립트(`https://js.tosspayments.com/v2/standard`)를 동적으로 불러오고, 그 스크립트가 렌더링하는
+  "결제창" UI가 같은 페이지 안의 인라인 iframe인지 별도 팝업(새 창)인지는 Toss가 배포한 SDK
+  버전에 달려 있어 이 저장소 코드만으로는 확정할 수 없다. 그 내부 DOM은 Toss가 소유한
+  Cross-Origin 콘텐츠라 셀렉터가 예고 없이 바뀔 수 있어, 결제 승인까지 자동화를 밀어붙이면
+  Flaky한 테스트가 된다고 판단해 결제창이 열리기 시작했다는 신호(새 Page 이벤트 또는
+  `tosspayments.com` iframe 삽입 중 하나)까지만 확인하고 멈춘다. `tossPayment.ts`의
+  `test_gck_` 접두사 강제 검증 덕분에 설령 끝까지 진행해도 실결제는 발생하지 않지만, 그것과
+  별개로 위 이유로 여기서 자동화를 멈췄다.
+- `FE-BE-024`는 결제 승인 대신 프런트의 복구 계약을 검증한다 — `PENDING` 결제를 만든 뒤 주문 상세로
+  다시 진입해 `GET /api/v1/payments/{paymentId}` 또는 `GET /api/v1/payments/by-order/{orderId}`로
+  기존 결제를 찾고, "결제 계속하기"를 표시하며, 결제 생성 `POST /api/v1/payments`가 한 번만
+  호출됐는지를 확인한다.
+- `FE-BE-022`는 `AUTH_ROLE_MANAGER_01`을 우선 쓴다 — `AUTH_ROLE_OWNER_01`은 2026-08-26 결정으로
+  `AUTH_VALID_01`과 같은 물리 계정·같은 Rate Limit Bucket을 공유해서, `fe-be-mandatory.spec.ts`
+  안에서 `FE-BE-001`~`006` 직후 이어서 로그인하면 `429`로 잘못 실패할 위험이 있다(MANAGER는 별개
+  물리 계정이라 이 위험이 없음). 마감 Button(`session.canDoDailyClosing`)에는 존재 확인 목적의
+  클릭조차 포함해 어떤 방식으로도 상호작용하지 않는다 — 대신 조회(`GET /api/v1/sales/daily`)만
+  검증한다. `FE-BE-022`/`026`/`027`은 모두 읽기 전용이다.
+
+**대기열 접수·카탈로그 등록/수정 화면 여정(`FE-BE-023`,`025`)도 추가했다** — `QUEUE-003`/
+`CATALOG-004`~`006`(위 §10 API 연결성 검증)과 같은 API를 이번엔 실제 화면 조작으로 재현한다.
+
+- `FE-BE-023`은 `QUEUE-003`과 같은 이유로 `RUN_DESTRUCTIVE_QUEUE_TESTS=true`가 있어야만 실행되는
+  파괴적(Tier B) 항목이다 — 등록한 Entry를 취소해도 store+businessDate Counter의 queueNumber
+  소비와 `CANCELLED` 행은 실 테넌트에 영구히 남는다. 화면에서 "취소" 버튼 클릭까지 실패해도
+  Entry가 `WAITING`으로 영구히 방치되지 않도록, 등록 API가 실제로 성공했다면(응답 `201`+`entryId`
+  확보) `POST /api/v1/queues/entry/{entryId}/cancel`을 `page.request`로 직접 한 번 더 호출해
+  정리를 시도한다.
+- `FE-BE-025`는 `CATALOG-004`~`006`과 같은 이유로 `RUN_DESTRUCTIVE_CATALOG_TESTS=true`가 있어야만
+  실행되는 파괴적(Tier B) 항목이다 — Category·Product 둘 다 DELETE Endpoint가 없어 생성하면
+  영구히 남는다. 등록 후 분류·상품 수정과 상품의 품절 `true→false` 왕복까지 화면에서 확인한다.
+  정리는 상품 "판매 중지"/분류 "이용 중지" 토글(둘 다 `PATCH`
+  `.../{id}`에 `{active:false}`만 보냄 — 상품의 "품절 처리"(`PATCH .../sold-out`)와는 다른
+  Endpoint·다른 필드다)로 `active:false` 전환까지만 하고, 실제 삭제는 하지 않는다.
+  `CATALOG-004`~`006`과 같은 이유로 `AUTH_VALID_01`이 아니라 `AUTH_ROLE_OWNER_01`(합성 테넌트
+  `e2e-auth-active`)로 로그인한다.
+- 둘 다 아직 실행 검증 전이다(아래 "주의사항" 참고).
+
+**운영 변경·로그인 보안 이력 화면 여정(`FE-BE-026`,`027`)도 추가했다** — 두 케이스는 데이터를
+만들거나 변경하지 않는 읽기 전용(Tier A)이다. `AUTH_ROLE_MANAGER_01`을 우선 사용하고, 없으면
+`AUTH_ROLE_OWNER_01`로 실행한다. 이력이 없는 새 테넌트도 정상 상태이므로 목록 행과 명시적인 빈 상태
+중 하나를 PASS로 인정하며, `FE-BE-026`은 목록이 있을 때 첫 행의 상세 API와 상세 Dialog까지 확인한다.
+2026-08-27 dev 배포에서 두 케이스 모두 PASS를 확인했다.
+
 `scripts/resolve-deployment-identity.mjs`도 추가했다 — `deployment`(Revision) 4개 필드를
 실제 AWS·GitOps에서 읽어와 `.env.deployment-identity.local`에 채운다. 자세한 내용은 바로 아래
 "Deployment Identity(Revision) 채우기" 참고.
@@ -198,18 +270,32 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 - **정적 계정 8개 준비 필요, 없으면 SKIP만 하고 대체 경로 없음**: `AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-010`/`014`, `SESS-004`/`005`는 전용 정적 계정이 없으면 `SKIP_PRECONDITION`으로만 끝난다 — Provisioning API 폴백을 완전히 제거했기 때문에(실 테넌트 DB에 추적 안 되는 데이터가 생기는 걸 막기 위함) 로컬 리허설로도 우회할 수 없다. 계정 요구사항은 `Docs/Specifications/운영·배포/"배포 검증용 테스트 계정 요청.md"` 참고.
 - **`OPS-005`의 `observedSinglePodWindow`는 보조 지표다**: PASS해도 이 값이 `false`면 대체 Pod가 너무 빨리 Ready가 돼서 "정말로 Pod 1개만 서비스하던 순간"을 직접 관측하지 못했다는 뜻이다(서비스가 계속 정상 응답했다는 핵심 판정 자체는 여전히 유효하다) — 결과를 엄격하게 확인해야 하면 JSONL의 이 필드를 같이 봐야 한다.
 - **`OPS-004`의 TLS/네트워크 오류 구분 로직은 아직 실 클러스터로 검증 못함**: 내부 ALB가 실수로 인터넷에 노출된 경우(TLS 인증서 오류로 응답이 옴)와 정상적으로 차단된 경우(연결 자체가 실패)를 구분하도록 새로 추가했다 — 기존에 "2026-08-25 실 AWS 배포 PASS 확인"한 건 이 분기가 생기기 전 코드 기준이라, 이 분기 자체는 실제 TLS 오류 케이스로는 아직 검증되지 않았다.
+- **`FE-BE-020`~`022`,`024`는 아직 실행 검증 전이다**: 이 작업 환경은 실 배포 대상에 대한 네트워크 접근이
+  없어(샌드박스 제약) 직접 실행해 확인하지 못했다. 특히 `FE-BE-021`의 Toss 결제창 신호 감지(새
+  Page 이벤트 또는 `tosspayments.com` iframe)는 배포된 Toss SDK의 실제 동작을 관찰하지 않은 채
+  코드만으로 판단한 것이라, 처음 실행할 때 결과를 반드시 직접 확인해야 한다 — 만약 그 신호가
+  기대와 다른 형태로 나타나면(예: 셋 중 어느 쪽도 아닌 제3의 방식) `FAIL_UI`로 오탐될 수 있다.
+  `FE-BE-020`의 화면 취소와 `FE-BE-021`/`024`의 정리(취소) 호출, `FE-BE-024`의 새 탐색 뒤
+  PENDING 결제 복구가 실제 배포에서도 성공하는지도 마찬가지로 미검증이다.
+- **`FE-BE-023`/`025`도 아직 실행 검증 전이다**: 위 `FE-BE-020`~`022`,`024`와 같은 이유(샌드박스 네트워크
+  제약)로 직접 실행해 확인하지 못했다. 특히 `FE-BE-023`의 대기열 목록 행 매칭(`#{queueNumber}`
+  텍스트로 행을 찾는 방식)과 `FE-BE-025`의 분류 선택 로직(방금 만든 분류를 명시적으로 클릭해
+  선택 — 기존 Category가 이미 있는 테넌트에서 `load()`가 다른 분류를 자동 선택할 수 있어서)은
+  코드만으로 판단한 것이라, 처음 실행할 때 결과를 반드시 직접 확인해야 한다. `FE-BE-023`의
+  정리(취소) 호출과 `FE-BE-025`의 정리(비활성화) 호출이 실제로 성공하는지도 마찬가지로
+  미검증이다.
 
 ## 오케스트레이션 스크립트 사용법
 
 개별 스위트를 하나씩 손으로 이어붙이지 않도록 `scripts/run-mandatory-gate.mjs`와 `scripts/run-full-gate.mjs` 두 오케스트레이션 스크립트를 추가했다.
 
-- **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `QUEUE-001`~`002`(k6 `api/scenarios/queue-connectivity.js`) → `CATALOG-001`~`003`(k6 `api/scenarios/catalog-connectivity.js`) → `AUDIT-001`,`SALES-001`(k6 `api/scenarios/audit-sales-connectivity.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구). `QUEUE-001`~`002`/`CATALOG-001`~`003` 단계는 `session-flow.js` 직후 `AUTH_VALID_01` 로그인을 1회씩 더 쓰고, 그 뒤 `AUDIT-001`/`SALES-001` 단계는 별도 프로세스(별도 파일)라 로그인이 1회 더 필요해 그 앞에서 5분을 추가로 대기한다 — 이 순서를 바꾸지 말 것(아래 "⚠️ 계정 Rate Limit Bucket 주의"·`api/README.md` 참고).
-- **`node scripts/run-full-gate.mjs`** — 위 전체 + `QUEUE-003`(안내만 출력 — `RUN_DESTRUCTIVE_QUEUE_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `queue-connectivity.js` 단계 안에서 이미 실행됨) → `FE-BE-010`~`015`(Playwright `tests/fe-be-conditional.spec.ts`) → `AUTH-030`/`031`/`033`/`034`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다.
+- **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`,`022`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `QUEUE-001`~`002`(k6 `api/scenarios/queue-connectivity.js`) → `CATALOG-001`~`003`(k6 `api/scenarios/catalog-connectivity.js`) → `AUDIT-001`,`SALES-001`(k6 `api/scenarios/audit-sales-connectivity.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구). `FE-BE-022`는 `AUTH_ROLE_MANAGER_01`/`AUTH_ROLE_OWNER_01` 정적 계정이 없으면 SKIP된다. `QUEUE-001`~`002`/`CATALOG-001`~`003` 단계는 `session-flow.js` 직후 `AUTH_VALID_01` 로그인을 1회씩 더 쓰고, 그 뒤 `AUDIT-001`/`SALES-001` 단계는 별도 프로세스(별도 파일)라 로그인이 1회 더 필요해 그 앞에서 5분을 추가로 대기한다 — 이 순서를 바꾸지 말 것(아래 "⚠️ 계정 Rate Limit Bucket 주의"·`api/README.md` 참고).
+- **`node scripts/run-full-gate.mjs`** — 위 전체 + `QUEUE-003`(안내만 출력 — `RUN_DESTRUCTIVE_QUEUE_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `queue-connectivity.js` 단계 안에서 이미 실행됨) → `CATALOG-004`~`006`(안내만 출력 — `RUN_DESTRUCTIVE_CATALOG_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `catalog-connectivity.js` 단계 안에서 이미 실행됨) → `FE-BE-010`~`015`,`020`,`021`,`023`~`027`(Playwright `tests/fe-be-conditional.spec.ts` — `FE-BE-020`/`021`/`024`는 `RUN_DESTRUCTIVE_ORDER_TESTS=true`, `FE-BE-023`은 `RUN_DESTRUCTIVE_QUEUE_TESTS=true`, `FE-BE-025`는 `RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) → `AUTH-030`/`031`/`033`/`034`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다.
 - `OPS-001`/`OPS-003`은 `DORO_ENVIRONMENT`가 `local`로 시작할 때만 실제로 실행된다 — 그 외의(실 배포) 대상에서는 `RUN_FAULT_INJECTION_TESTS` 설정과 무관하게 자동으로 SKIP된다. `scripts/run-fault-injection.mjs`가 로컬 Docker 주소·컨테이너 이름에 하드코딩돼 있어 실 배포를 대상으로 실행할 수 없기 때문에, 잘못된(로컬) 대상을 검증하고도 실 배포를 검증한 것처럼 보이는 상황을 막기 위한 안전장치다.
 - 반대로 `OPS-002`/`OPS-005`는 `DORO_ENVIRONMENT`가 `local`로 시작하면 자동으로 SKIP된다 — 둘 다 `kubectl`로 실 EKS의 `store-access-api`를 직접 건드리는 실 배포 전용 스크립트라, 로컬 리허설 대상에서 실행할 이유가 없다(이 머신에 다른 실제 클러스터를 가리키는 `kubectl` 컨텍스트가 우연히 설정돼 있다면 로컬 리허설 도중 그 클러스터를 건드리는 일을 막기 위함).
 - `RUN_DESTRUCTIVE_AUTH_TESTS=true`로 `run-full-gate.mjs`를 돌리면 `AUTH-030`~`034` 단계 직전에 **약 65초를 그대로 대기한다** — 바로 앞에서 `AUTH-015`가 `AUTH_LOCKOUT_01`의 Rate Limit Bucket을 소진시켜 놓고 가기 때문에, 대기 없이 곧바로 `AUTH-030`을 돌리면 5회 연속 `401`이어야 할 응답 중 일부가 `429`로 나와 실제 결함이 아닌 순서 문제로 FAIL이 날 수 있다.
 - 두 스크립트 다 `DORO_RUN_ID`를 자동 생성하거나 이미 export돼 있으면 그대로 쓰고, 한 단계가 실패해도 나머지 단계는 계속 진행한 뒤 마지막에 종합 결과를 보여주고 실패가 하나라도 있으면 exit code 1로 끝난다. **`build-combined-summary.mjs` 단계의 exit code는 완화 판정(`frontBackConnected`)이 아니라 문서 §7 그대로의 엄격 판정(`passConnected`) 기준이다** — 둘이 갈리면 어느 §7 세부 조건이 걸렸는지 콘솔에 같이 출력된다.
-- **파괴적 플래그는 오케스트레이터가 절대 자동으로 켜지 않는다** — `RUN_DESTRUCTIVE_AUTH_TESTS=true`(`AUTH-030`/`031`/`033`/`034`용), `RUN_DESTRUCTIVE_QUEUE_TESTS=true`(`QUEUE-003`용), `RUN_FAULT_INJECTION_TESTS=true`(`FE-BE-012` 및 `OPS-001`/`002`/`003`/`005`의 `--confirm` 대신 재사용됨)를 실행 전 직접 export해야만 해당 케이스가 실제로 돈다. 안 켜져 있으면 무엇을 export해야 하는지 안내 문구를 찍고 그 단계만 SKIP한다.
+- **파괴적 플래그는 오케스트레이터가 절대 자동으로 켜지 않는다** — `RUN_DESTRUCTIVE_AUTH_TESTS=true`(`AUTH-030`/`031`/`033`/`034`용), `RUN_DESTRUCTIVE_QUEUE_TESTS=true`(`QUEUE-003`과 `FE-BE-023`용), `RUN_DESTRUCTIVE_CATALOG_TESTS=true`(`CATALOG-004`~`006`과 `FE-BE-025`용), `RUN_DESTRUCTIVE_ORDER_TESTS=true`(`FE-BE-020`/`021`/`024`용), `RUN_FAULT_INJECTION_TESTS=true`(`FE-BE-012` 및 `OPS-001`/`002`/`003`/`005`의 `--confirm` 대신 재사용됨)를 실행 전 직접 export해야만 해당 케이스가 실제로 돈다. 안 켜져 있으면 무엇을 export해야 하는지 안내 문구를 찍고 그 단계만 SKIP한다.
 
 ```bash
 export DORO_FRONTEND_ORIGIN=https://doro.minseok.click
@@ -320,10 +406,18 @@ JMESPath `contains()`가 타입 오류를 냈다 — `Aliases.Items || \`[]\``�
 
 ### 계정 값과 별개로 필요한 플래그
 
-계정 값이 다 채워져 있어도, 아래 두 플래그를 실행 전 직접 export하지 않으면 해당 플래그가 지키는
+계정 값이 다 채워져 있어도, 아래 플래그를 실행 전 직접 export하지 않으면 해당 플래그가 지키는
 케이스는 여전히 SKIP된다(오케스트레이터가 대신 켜주지 않는다):
 
 - `RUN_DESTRUCTIVE_AUTH_TESTS=true` — `AUTH-030`/`031`/`033`/`034`(`AUTH_LOCKOUT_01` 사용)
+- `RUN_DESTRUCTIVE_ORDER_TESTS=true` — `FE-BE-020`/`021`/`024`(주문 생성·취소·결제 시작·PENDING 복구, `AUTH_VALID_01` 사용 —
+  주문 취소 API가 소프트 취소라 실 테넌트에 이력이 영구히 남는다)
+- `RUN_DESTRUCTIVE_QUEUE_TESTS=true` — `QUEUE-003`(k6, `AUTH_VALID_01` 사용)과 `FE-BE-023`(화면
+  Playwright, 같은 계정)이 각자 독립적으로 이 플래그를 읽는다 — 등록한 Entry를 취소해도
+  queueNumber 소비와 `CANCELLED` 행은 실 테넌트에 영구히 남는다
+- `RUN_DESTRUCTIVE_CATALOG_TESTS=true` — `CATALOG-004`~`006`(k6, `AUTH_ROLE_OWNER_01` 사용)과
+  `FE-BE-025`(화면 Playwright, 같은 계정)가 각자 독립적으로 이 플래그를 읽는다 — DELETE Endpoint가
+  없어 생성한 Category·Product는 비활성화해도 실 테넌트에 영구히 남는다
 - `RUN_FAULT_INJECTION_TESTS=true` — `FE-BE-012`, `OPS-001`/`002`/`003`/`005`
 
 ## 실행 전제
