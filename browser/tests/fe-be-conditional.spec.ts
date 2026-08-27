@@ -73,6 +73,30 @@ async function logout(page: Page) {
   await page.waitForURL('**/pos/login**')
 }
 
+const SHARED_ACCOUNT_RATE_LIMIT_RECOVERY_MS = 65_000
+
+interface RateLimitRecoveredLogin {
+  response: Response
+  rateLimitRetried: boolean
+}
+
+// AUTH_VALID_01와 AUTH_ROLE_OWNER_01은 같은 물리 계정일 수 있다. 앞선 시나리오가 이 계정의
+// Bucket을 소진한 경우, 429를 제품/화면 결함으로 기록하지 않도록 1분 회복 후 한 번만 재시도한다.
+// 재시도 횟수를 제한해 실제 인증 장애를 무한히 숨기지 않는다.
+async function loginWithRateLimitRecovery(page: Page, account: RoleAccount): Promise<RateLimitRecoveredLogin> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.goto('/pos/login')
+    await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
+    const response = await submitAndWaitLogin(page)
+    if (response.status() !== 429 || attempt === 1) {
+      return { response, rateLimitRetried: attempt === 1 }
+    }
+    await page.waitForTimeout(SHARED_ACCOUNT_RATE_LIMIT_RECOVERY_MS)
+  }
+
+  throw new Error('로그인 재시도 루프가 비정상적으로 종료되었습니다.')
+}
+
 // ---------------------------------------------------------------------------
 // FE-BE-013: Browser Network 통제 — 로그인 요청만 연결 차단
 // ---------------------------------------------------------------------------
@@ -1747,7 +1771,8 @@ async function deactivateProductViaUi(page: Page, productId: string, productName
 }
 
 test('FE-BE-025 화면에서 분류·상품 등록/수정 → 품절 왕복 → 비활성화', async ({ page }) => {
-  test.setTimeout(60_000)
+  // 공유 OWNER Bucket이 앞선 FE-BE-014/주문 흐름으로 소진되면 65초 회복 뒤 1회 재시도한다.
+  test.setTimeout(130_000)
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
@@ -1778,9 +1803,7 @@ test('FE-BE-025 화면에서 분류·상품 등록/수정 → 품절 왕복 → 
     return
   }
 
-  await page.goto('/pos/login')
-  await fillLoginForm(page, account.tenantCode, account.loginId, account.password)
-  const loginResponse = await submitAndWaitLogin(page)
+  const { response: loginResponse, rateLimitRetried } = await loginWithRateLimitRecovery(page, account)
   if (loginResponse.status() !== 200) {
     record({
       testCaseId: 'FE-BE-025',
@@ -1788,7 +1811,9 @@ test('FE-BE-025 화면에서 분류·상품 등록/수정 → 품절 왕복 → 
       durationMs: Date.now() - t0,
       accountAlias: 'AUTH_ROLE_OWNER_01',
       resultCode: 'ERROR_TRANSPORT',
-      errorClass: `사전 로그인 실패 (status=${loginResponse.status()}) — FE-BE-025 전제조건 불충족`,
+      errorClass:
+        `사전 로그인 실패 (status=${loginResponse.status()}, rateLimitRetried=${rateLimitRetried}) — ` +
+        'FE-BE-025 전제조건 불충족',
     })
     expect(false, `FE-BE-025 실패: 사전 로그인 실패 (status=${loginResponse.status()})`).toBe(true)
     return
@@ -1991,6 +2016,7 @@ test('FE-BE-025 화면에서 분류·상품 등록/수정 → 품절 왕복 → 
       soldOutRoundTripOk,
       productDeactivatedOk,
       categoryDeactivatedOk,
+      rateLimitRetried,
     },
     browser: browserCounts(errors),
     errorClass: pass
