@@ -527,10 +527,15 @@ test('FE-BE-022 일별 매출 조회', async ({ page }) => {
 
   const salesStatus = salesResponse?.status() ?? 0
   const salesOk = salesStatus === 200
+  // waitForResponse는 응답 헤더 도착 시점에만 resolve된다 — 그 뒤 Vue가 loading.value=false로
+  // 바꾸고 <table class="sales-table">를 실제로 그리기까지는 한 tick 이상의 시간차가 있다.
+  // isVisible()은 그 순간 한 번만 확인하는 non-retrying API라 이 시간차를 못 버티고 오탐 FAIL을
+  // 낼 수 있으므로, errorLocator와 동일하게(예: 93행) auto-retrying waitFor로 렌더링을 기다린다.
   const tableVisible = salesOk
     ? await page
         .locator('table.sales-table')
-        .isVisible()
+        .waitFor({ state: 'visible', timeout: 5_000 })
+        .then(() => true)
         .catch(() => false)
     : false
   const rowCount = tableVisible ? await page.locator('table.sales-table tbody tr').count() : 0
