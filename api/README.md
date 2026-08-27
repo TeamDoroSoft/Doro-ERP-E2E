@@ -39,6 +39,19 @@ DORO_API_ORIGIN=https://localhost:8080 \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-mandatory.js > /tmp/auth-mandatory.log 2>&1
 ```
 
+## `AUTH-021`: 과대 로그인 Body의 안전한 거절
+
+**실측으로 확인한 중요한 사실(`AUTH-021`, 운영 2026-08-27)**: `loginId`와 `password`에 각각
+5,000자를 넣으면 JSON Body가 8KB를 넘어 CloudFront WAF의 `AWSManagedRulesCommonRuleSet`에 포함된
+`SizeRestrictions_BODY`가 애플리케이션 도달 전에 HTTP `403`으로 차단한다. 반면 현재
+`store-access-api`의 `LoginRequest`에는 `@NotBlank`만 있고 `@Size(max=...)`가 없어, 애플리케이션이
+이 입력을 반드시 `400 VALIDATION_FAILED`로 거절한다는 기존 전제는 실제 계약과 맞지 않는다.
+
+따라서 `AUTH-031`과 같은 원칙으로 정확한 상태 하나보다 “과대 입력을 안전하게 거절하고 내부 정보를
+노출하지 않았는가”를 판정한다. 애플리케이션이 직접 `400 VALIDATION_FAILED`로 거절하거나 WAF가 먼저
+`403`으로 거절하고 응답 Body에 예외·SQL·Java 내부 정보가 없으면 PASS다. 결과의
+`observed.rejectionLayer`와 `errorClass`에는 각각 애플리케이션 Validation/WAF 거절을 구분해 기록한다.
+
 ## SESS-004 / SESS-005: 전용 정적 계정
 
 `SESS-001`/`002`/`003`/`006`/`007`과 달리 `SESS-004`(임시 비밀번호 로그인)·`SESS-005`(비밀번호 변경
