@@ -6,6 +6,44 @@
 `Doro-ERP-Front`, `Doro-ERP-Infra`, `Doro-ERP-Service`, `Docs`, `Doro-ERP-GitOps`와 마찬가지로 독립 git 저장소이며,
 `Final_Project/CLAUDE.md`의 브랜치 네이밍(`feature/`, `bugfix/`, `refactor/`, `hotfix/`)과 리뷰 워크플로우(Claude 구현 → Codex 로컬 diff 리뷰)를 동일하게 따른다.
 
+## 빠른 시작
+
+필수 값을 이미 준비했다면 다음 순서로 기본 배포 게이트를 실행한다.
+
+```bash
+export DORO_FRONTEND_ORIGIN=https://doro.minseok.click
+export DORO_API_ORIGIN=https://doro.minseok.click
+export DORO_ENVIRONMENT=prod-alpha
+export DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=...
+
+node scripts/run-mandatory-gate.mjs
+```
+
+엄격 판정(`passConnected`)에는 Deployment Identity가 필요하다. 실제 실행 전에는 아래
+"Deployment Identity(Revision) 채우기" 절까지 적용한다.
+
+## 문서 구성
+
+- `README.md` — 저장소 개요, 구현 범위, 준비와 실행 방법
+- `LOCAL_REHEARSAL.md` — 로컬 Docker Prod-like 리허설 상세 절차
+- `api/README.md` — k6 Runner, Rate Limit과 케이스별 전제조건
+
+## 목차
+
+- [빠른 시작](#빠른-시작)
+- [문서 구성](#문서-구성)
+- [구조](#구조)
+- [구현 범위 (현재)](#구현-범위-현재)
+- [주의사항](#주의사항)
+- [오케스트레이션 스크립트 사용법](#오케스트레이션-스크립트-사용법)
+- [조건부/파괴적 항목을 구분한 이유](#조건부파괴적-항목을-구분한-이유)
+- [미구현 항목 설명](#미구현-항목-설명)
+- [Deployment Identity(Revision) 채우기](#deployment-identityrevision-채우기)
+- [환경변수 주입 (로컬)](#환경변수-주입-로컬)
+- [실행 전제](#실행-전제)
+- [실행](#실행)
+- [로컬 Docker Prod-like 리허설 모드](#로컬-docker-prod-like-리허설-모드)
+
 ## 구조
 
 ```
@@ -350,6 +388,9 @@ node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
 `api/README.md` 참고.
 
 ## 로컬 Docker Prod-like 리허설 모드
+
+독립 문서로 바로 확인하려면 [`LOCAL_REHEARSAL.md`](LOCAL_REHEARSAL.md)를 사용한다. 이 절에도
+README 한 파일만 확인하는 환경을 위해 같은 핵심 절차를 유지한다.
 
 ### 용어 정의 — "로컬 테스트"란
 
