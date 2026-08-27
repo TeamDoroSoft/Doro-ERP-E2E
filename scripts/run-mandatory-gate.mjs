@@ -38,10 +38,16 @@ export async function runMandatoryGate() {
   const steps = []
 
   steps.push(
-    await runStep('FE-BE-001~006 (Playwright 필수 Gate)', () => runPlaywrightSpec('tests/fe-be-mandatory.spec.ts')),
+    // FE-BE-022(일별 매출 조회)도 같은 파일 안에 있다 — AUTH_ROLE_MANAGER_01/OWNER_01 정적 계정
+    // 전제라 없으면 SKIP_PRECONDITION으로 끝나고, MANAGER 계정을 쓸 수 있으면 AUTH_VALID_01/
+    // AUTH_ROLE_OWNER_01 공유 Bucket을 건드리지 않는다(browser/tests/fe-be-mandatory.spec.ts의
+    // FE-BE-022 주석 참고). MANAGER가 없어 OWNER로 폴백하면 바로 아래 waitForAuthValid01BucketRefill
+    // 전에 이 Bucket을 1회 더 쓴다는 뜻이므로, 그 폴백이 실제로 쓰였다면 이 대기 자체가 그 소비까지
+    // 함께 흡수한다.
+    await runStep('FE-BE-001~006,022 (Playwright 필수 Gate)', () => runPlaywrightSpec('tests/fe-be-mandatory.spec.ts')),
   )
 
-  await waitForAuthValid01BucketRefill('FE-BE-001~006')
+  await waitForAuthValid01BucketRefill('FE-BE-001~006,022')
 
   steps.push(
     await runStep('AUTH-001~004,010,020~024 (k6 auth-mandatory)', () =>

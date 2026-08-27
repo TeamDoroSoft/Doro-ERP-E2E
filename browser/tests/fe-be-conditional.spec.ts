@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { test, expect, type ConsoleMessage, type Page, type Request } from '@playwright/test'
+import { test, expect, type ConsoleMessage, type Page, type Request, type Response } from '@playwright/test'
 import { loadDeployEnv } from '../lib/env'
+import { loginAsAuthValid01 } from '../lib/loginFlow'
 import { appendCaseResult, type CaseResultInput } from '../lib/resultLogger'
 import { randomToken, allowLocalSelfSignedCert } from '../lib/provisioning'
 import { setupRoleFixtures, type RoleAccount } from '../lib/roleFixtures'
@@ -572,4 +573,332 @@ test('FE-BE-014 Role별 허용 메뉴와 보호 Route 일치', async ({ page }) 
   }
 
   expect(pass, `FE-BE-014 실패: staffBlockedPath="${staffBlockedPath}" staffBlockedReason="${staffBlockedReason}"`).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// FE-BE-020/021: 주문 생성 → 결제 시작 (Tier B, 파괴적) — RUN_DESTRUCTIVE_ORDER_TESTS 필요
+//
+// 주문 취소 API(POST /api/v1/orders/{orderId}/cancel, Doro-ERP-Front src/api/order.ts의
+// cancelOrder())가 실제로 존재함을 확인했다(EdgeOrderController.java → commerce-api
+// OrderController.java → OrderService.cancel()). 다만 DELETE가 아니라 status만 CANCELLED로
+// 바꾸는 소프트 취소이고, order_status_history에 생성·취소 이력이 영구히 남는다(commerce-api
+// OrderService.java/Order.java 직접 확인 완료) — QUEUE-003/CATALOG-004~006과 같은 "취소·비활성화는
+// 되지만 이력은 영구 잔존" 패턴이다. 또한 cancelBeforePayment()는 주문 status가 정확히 CREATED일
+// 때만 성공하고(그 외엔 409 INVALID_STATE), 멱등이 아니다 — 이미 CANCELLED인 주문에 다시 호출해도
+// 409다. Role 제한은 없다(로그인한 직원이면 역할 무관).
+//
+// 그래서 아래 두 테스트는 각자 만든 주문을 테스트 마지막에 이 API로 최선 노력(Best-effort) 취소해
+// 실 테넌트에 CREATED 상태 주문이 방치되지 않게 한다(QUEUE-003의 try/finally 정리 철학과 동일) —
+// 다만 정리에 성공해도 취소 이력 자체는 영구히 남고, FE-BE-021처럼 결제(Payment)가 이미 생성된
+// 뒤에는 정리 취소가 409로 거절될 수 있다(아래 FE-BE-021 주석 참고) — 그 경우 실 테넌트에 CREATED
+// 주문과 PENDING 결제가 영구히 남는다.
+// ---------------------------------------------------------------------------
+const DESTRUCTIVE_ORDER_FLAG = 'RUN_DESTRUCTIVE_ORDER_TESTS'
+
+interface CreateOrderUiResult {
+  status: number
+  orderId: string
+  transportError: string | null
+  skipReason: string | null
+}
+
+// PosOrderCreateView.vue를 그대로 따른다 — 기본 주문 방식이 TAKEOUT이라 테이블 선택이 필요 없고
+// (useOrderDraft.ts 확인 완료), 카탈로그 메뉴가 하나도 없으면(EmptyState) 담을 상품이 없어 SKIP한다.
+async function createOrderViaUi(page: Page): Promise<CreateOrderUiResult> {
+  await page.goto('/pos/orders/new')
+
+  const emptyState = await page
+    .getByText('판매할 메뉴가 없습니다.')
+    .isVisible()
+    .catch(() => false)
+  if (emptyState) {
+    return {
+      status: 0,
+      orderId: '',
+      transportError: null,
+      skipReason: 'AUTH_VALID_01 테넌트에 판매 가능한 메뉴가 없어 주문을 만들 상품이 없음',
+    }
+  }
+
+  await page.getByRole('button', { name: '담기' }).first().click()
+
+  let createResponse: Response | null = null
+  let transportError: string | null = null
+  try {
+    ;[createResponse] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/orders',
+      ),
+      page.getByRole('button', { name: '주문 등록' }).click(),
+    ])
+  } catch (error) {
+    transportError = error instanceof Error ? error.message : String(error)
+  }
+
+  const status = createResponse?.status() ?? 0
+  let orderId = ''
+  if (status === 201) {
+    // submit() 성공 시 router.push({ name: 'pos-orders-detail', params: { orderId } })로 이동한다
+    // (PosOrderCreateView.vue 확인 완료) — 이 이동 자체가 "주문이 성공적으로 생성됐다"는 화면상의
+    // 실제 신호다.
+    await page.waitForURL(/\/pos\/orders\/[^/]+$/, { timeout: 10_000 }).catch(() => {})
+    orderId = new URL(page.url()).pathname.match(/\/pos\/orders\/([^/]+)$/)?.[1] ?? ''
+  }
+  return { status, orderId, transportError, skipReason: null }
+}
+
+// OrderDetailPanel.vue: "주문 취소" Button은 order.status === 'CREATED'일 때만 렌더링되고, 클릭 시
+// window.confirm()으로 먼저 확인한다(PosOrderDetailView.vue의 cancel() 확인 완료) — dialog 이벤트를
+// 미리 accept로 등록해둔다.
+async function cancelOrderViaUi(page: Page, orderId: string): Promise<number> {
+  page.once('dialog', (dialog) => void dialog.accept())
+  const [cancelResponse] = await Promise.all([
+    page.waitForResponse(
+      (res) =>
+        res.request().method() === 'POST' &&
+        new URL(res.url()).pathname === `/api/v1/orders/${orderId}/cancel`,
+    ),
+    page.getByRole('button', { name: '주문 취소' }).click(),
+  ])
+  return cancelResponse.status()
+}
+
+test('FE-BE-020 화면에서 새 주문 생성', async ({ page }) => {
+  test.setTimeout(45_000)
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+
+  if (process.env[DESTRUCTIVE_ORDER_FLAG] !== 'true') {
+    record({
+      testCaseId: 'FE-BE-020',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass:
+        `${DESTRUCTIVE_ORDER_FLAG}=true로 명시하지 않으면 실행하지 않음 — 주문 취소 API는 성공해도 ` +
+        'order_status_history에 생성·취소 이력이 영구히 남는 소프트 취소라(위 파일 상단 주석 참고) 파괴적으로 분류했다.',
+    })
+    return
+  }
+
+  await loginAsAuthValid01(page, env)
+  const { status, orderId, transportError, skipReason } = await createOrderViaUi(page)
+
+  if (skipReason) {
+    record({
+      testCaseId: 'FE-BE-020',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: skipReason,
+    })
+    return
+  }
+
+  const detailVisible =
+    status === 201 && orderId !== ''
+      ? await page
+          .locator('article.order-detail')
+          .isVisible()
+          .catch(() => false)
+      : false
+  const created = status === 201 && orderId !== '' && detailVisible
+  const pass = created && !transportError
+
+  let cleanupCancelStatus = 0
+  if (created) {
+    try {
+      cleanupCancelStatus = await cancelOrderViaUi(page, orderId)
+    } catch (error) {
+      console.error(
+        `⚠ FE-BE-020이 만든 주문(${orderId})을 정리(취소)하지 못했습니다 — 실 테넌트에 CREATED ` +
+          `상태로 남아있을 수 있어 수동 확인이 필요합니다: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
+  record({
+    testCaseId: 'FE-BE-020',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias: 'AUTH_VALID_01',
+    resultCode: transportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_UI',
+    expected: { requestPath: '/api/v1/orders', httpStatus: 201, finalPath: orderId ? `/pos/orders/${orderId}` : undefined },
+    observed: {
+      requestPath: '/api/v1/orders',
+      httpStatus: status,
+      finalPath: orderId ? new URL(page.url()).pathname : undefined,
+    },
+    assertions: {
+      orderCreated: status === 201,
+      orderDetailVisible: detailVisible,
+      cleanupCancelSucceeded: created && cleanupCancelStatus === 200,
+    },
+    browser: browserCounts(errors),
+    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_ORDER_CREATE_FAILED',
+  })
+
+  expect(
+    pass,
+    `FE-BE-020 실패: status=${status} orderId="${orderId}" detailVisible=${detailVisible} transportError=${transportError}`,
+  ).toBe(true)
+})
+
+test('FE-BE-021 결제 시작 시 Toss 결제창 연동 확인', async ({ page, context }) => {
+  test.setTimeout(60_000)
+  const errors = trackBrowserErrors(page)
+  const startedAt = new Date().toISOString()
+  const t0 = Date.now()
+
+  if (process.env[DESTRUCTIVE_ORDER_FLAG] !== 'true') {
+    record({
+      testCaseId: 'FE-BE-021',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: `${DESTRUCTIVE_ORDER_FLAG}=true로 명시하지 않으면 실행하지 않음 — FE-BE-020과 같은 이유로 이 케이스도 새 주문을 만든다.`,
+    })
+    return
+  }
+
+  await loginAsAuthValid01(page, env)
+  const created = await createOrderViaUi(page)
+
+  if (created.skipReason) {
+    record({
+      testCaseId: 'FE-BE-021',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: created.skipReason,
+    })
+    return
+  }
+  if (created.status !== 201 || !created.orderId) {
+    record({
+      testCaseId: 'FE-BE-021',
+      startedAt,
+      durationMs: Date.now() - t0,
+      accountAlias: 'AUTH_VALID_01',
+      resultCode: created.transportError ? 'ERROR_TRANSPORT' : 'FAIL_UI',
+      errorClass: 'FE-BE-021의 전제조건인 주문 생성 실패 — FE-BE-020 참고',
+    })
+    expect(
+      false,
+      `FE-BE-021 실패: 결제 시나리오의 전제조건인 주문 생성에 실패했습니다 (status=${created.status})`,
+    ).toBe(true)
+    return
+  }
+  const orderId = created.orderId
+
+  let payButtonError: string | null = null
+  let tossConfigError = false
+  let paymentCreateStatus = 0
+  let tossWidgetSignal: 'popup' | 'iframe' | null = null
+  let cleanupCancelStatus = 0
+  let cleanupCancelError: string | null = null
+
+  try {
+    // OrderPaymentPanel.vue의 startTossPayment(): VITE_TOSS_CLIENT_KEY가 비어 있으면 결제(Payment)
+    // API를 아예 호출하지 않고 곧바로 '.payment-panel__error'에 안내 문구를 띄운다 — 이 저장소
+    // 코드로는 고칠 수 없는 배포 빌드 설정 문제이므로 SKIP으로 구분한다.
+    const configErrorLocator = page.locator('.payment-panel__error', { hasText: '결제를 시작할 수 없습니다' })
+
+    const [paymentResponse] = await Promise.all([
+      page
+        .waitForResponse(
+          (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/payments',
+          { timeout: 10_000 },
+        )
+        .catch(() => null),
+      page.getByRole('button', { name: '결제하기' }).click(),
+    ])
+
+    paymentCreateStatus = paymentResponse?.status() ?? 0
+
+    if (paymentCreateStatus === 0) {
+      tossConfigError = await configErrorLocator.isVisible().catch(() => false)
+    } else if (paymentCreateStatus === 201) {
+      // 판단 근거(정직하게 여기까지만 자동화한 이유): tossPayment.ts는 @tosspayments/tosspayments-sdk의
+      // loadTossPayments()로 https://js.tosspayments.com/v2/standard 스크립트를 동적으로 <script> 태그로
+      // 주입하고(SDK dist 코드 확인 완료 — 이 저장소 코드에는 그 스크립트가 만드는 DOM 구조가 전혀
+      // 없다), widgets.renderPaymentWindow()가 반환하는 "결제창" UI가 같은 페이지 안에 인라인
+      // iframe으로 뜨는지 별도 팝업(새 창/탭)으로 뜨는지는 Toss가 배포한 원격 SDK 버전에 달려 있어
+      // 이 코드베이스만 보고는 확정할 수 없다. 그 내부 DOM(카드사 선택, 약관 동의, 승인 버튼 등)은
+      // Toss가 소유한 Cross-Origin 콘텐츠라 셀렉터가 예고 없이 바뀔 수 있고, 여기서 실제 결제
+      // 승인까지 밀어붙이면 Flaky한 테스트가 된다 — 그래서 결제창이 실제로 열리기 시작했다는 신호
+      // (새 Page 이벤트 또는 tosspayments.com iframe 삽입) 중 하나가 나타나는 것까지만 확인하고
+      // 멈춘다. 카드 정보 입력이나 결제 승인 Button 클릭은 절대 하지 않는다(test_gck_ 접두사
+      // 강제 검증 — tossPayment.ts의 tossSafeAmount()/clientKey 정규식 확인 완료 — 이 때문에 설령
+      // 끝까지 진행해도 실결제는 발생하지 않지만, 그것과 별개로 위 이유로 여기서 멈춘다).
+      const popupSignal = context
+        .waitForEvent('page', { timeout: 15_000 })
+        .then(() => 'popup' as const)
+        .catch(() => null)
+      const iframeSignal = page
+        .waitForSelector('iframe[src*="tosspayments.com"]', { timeout: 15_000 })
+        .then(() => 'iframe' as const)
+        .catch(() => null)
+      tossWidgetSignal = await Promise.race([popupSignal, iframeSignal])
+    }
+  } catch (error) {
+    payButtonError = error instanceof Error ? error.message : String(error)
+  } finally {
+    // 결제(Payment)가 PENDING으로 생성된 뒤에도 주문 status는 여전히 CREATED다(useOrderPayment.ts의
+    // canCreate가 order.status==='CREATED'를 전제로 결제 생성 버튼을 노출하는 것으로 확인 완료) —
+    // 그래서 정리 취소를 그대로 시도한다. 다만 이 경로는 FE-BE-020과 달리 검증되지 않은 영역이다
+    // (실행 검증 미실시, 아래 완료 보고 참고) — 만약 실제로는 결제 생성이 주문을 다른 status로
+    // 옮기거나 사이드이펙트가 있다면 이 취소 호출이 409로 거절될 수 있고, 그 경우 실 테넌트에
+    // CREATED 주문과 PENDING 결제가 영구히 남는다.
+    try {
+      cleanupCancelStatus = await cancelOrderViaUi(page, orderId)
+    } catch (error) {
+      cleanupCancelError = error instanceof Error ? error.message : String(error)
+      console.error(
+        `⚠ FE-BE-021이 만든 주문(${orderId})을 정리(취소)하지 못했습니다 — PENDING 결제가 연결돼 ` +
+          `있으면 주문 취소 API가 409로 거절할 수 있고, 이 경우 실 테넌트에 CREATED 주문과 PENDING ` +
+          `결제가 영구히 남습니다. 수동 확인 필요: ${cleanupCancelError}`,
+      )
+    }
+  }
+
+  const pass = !payButtonError && !tossConfigError && paymentCreateStatus === 201 && tossWidgetSignal !== null
+  const resultCode = tossConfigError
+    ? 'SKIP_PRECONDITION'
+    : payButtonError
+      ? 'ERROR_TRANSPORT'
+      : pass
+        ? 'PASS'
+        : 'FAIL_UI'
+
+  record({
+    testCaseId: 'FE-BE-021',
+    startedAt,
+    durationMs: Date.now() - t0,
+    accountAlias: 'AUTH_VALID_01',
+    resultCode,
+    expected: { requestPath: '/api/v1/payments', httpStatus: 201 },
+    observed: { requestPath: '/api/v1/payments', httpStatus: paymentCreateStatus },
+    assertions: {
+      paymentCreated: paymentCreateStatus === 201,
+      tossWidgetSignalObserved: tossWidgetSignal !== null,
+      cleanupCancelSucceeded: cleanupCancelStatus === 200,
+    },
+    browser: browserCounts(errors),
+    errorClass: tossConfigError
+      ? 'VITE_TOSS_CLIENT_KEY 미설정(또는 형식 오류) — 배포 Frontend 빌드 설정 확인 필요'
+      : pass
+        ? null
+        : 'UI_TOSS_WIDGET_NOT_OBSERVED',
+  })
+
+  if (resultCode === 'SKIP_PRECONDITION') return
+  expect(
+    pass,
+    `FE-BE-021 실패: paymentCreateStatus=${paymentCreateStatus} tossWidgetSignal=${tossWidgetSignal} ` +
+      `payButtonError=${payButtonError} cleanupCancelStatus=${cleanupCancelStatus}`,
+  ).toBe(true)
 })
