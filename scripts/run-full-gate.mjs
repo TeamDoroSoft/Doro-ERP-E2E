@@ -64,7 +64,7 @@ export async function runFullGate() {
         '  ℹ QUEUE-003은 여기서 별도로 실행하지 않습니다 — 위 runMandatoryGate()의 ' +
           '"QUEUE-001~002 (k6 queue-connectivity)" 단계 안에서 같은 k6 파일(api/scenarios/queue-connectivity.js)이 ' +
           '이 플래그를 직접 읽어 이미 함께 실행·기록했습니다. 결과는 그 단계가 만든 ' +
-          'reports/<runId>.QUEUE.results.jsonl에서 QUEUE-003 항목으로 확인하세요.',
+          'reports/<runId>/QUEUE.results.jsonl에서 QUEUE-003 항목으로 확인하세요.',
       )
       return { ok: true, skipped: false }
     }),
@@ -84,7 +84,7 @@ export async function runFullGate() {
         '  ℹ CATALOG-004~006은 여기서 별도로 실행하지 않습니다 — 위 runMandatoryGate()의 ' +
           '"CATALOG-001~003 (k6 catalog-connectivity)" 단계 안에서 같은 k6 파일(api/scenarios/catalog-connectivity.js)이 ' +
           '이 플래그를 직접 읽어 이미 함께 실행·기록했습니다. 결과는 그 단계가 만든 ' +
-          'reports/<runId>.CATALOG.results.jsonl에서 CATALOG-004~006 항목으로 확인하세요.',
+          'reports/<runId>/CATALOG.results.jsonl에서 CATALOG-004~006 항목으로 확인하세요.',
       )
       return { ok: true, skipped: false }
     }),
