@@ -131,15 +131,23 @@ node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
 ## 잠금·Rate Limit·장애 주입 (선택, 기본 비활성)
 
 ```bash
-# AUTH-030/031/033/034 — 5회 실패 계정 잠금과 계정·IP Rate Limit Bucket 소진.
+# AUTH-030/031/033 — 5회 실패 계정 잠금과 계정 Rate Limit Bucket 소진.
 # AUTH-030/031은 AUTH_LOCKOUT_01 정적 계정이 로컬엔 없어서 SKIP_PRECONDITION으로 끝난다 —
-# 033/034는 계정이 필요 없는 케이스라 그대로 돈다.
+# 033은 계정이 필요 없는 케이스라 그대로 돈다.
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
 DORO_API_ORIGIN=https://localhost:8080 \
 DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-lockout-ratelimit.js \
   > /tmp/k6-lockout.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033,AUTH-034
+node api/lib/build-report.mjs /tmp/k6-lockout.log auth-lockout-ratelimit AUTH-030,AUTH-031,AUTH-033
+
+# AUTH-034 — 격리된 로컬 경로의 Source IP Bucket 수렴 진단. full gate에는 포함되지 않는다.
+RUN_AUTH_IP_DIAGNOSTIC=true \
+DORO_API_ORIGIN=https://localhost:8080 \
+DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
+  k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-ip-ratelimit-diagnostic.js \
+  > /tmp/k6-auth-ip-diagnostic.log 2>&1
+node api/lib/build-report.mjs /tmp/k6-auth-ip-diagnostic.log AUTH-ip-diagnostic AUTH-034
 
 # OPS-001/003 — Store Access·Redis 컨테이너를 실제로 멈췄다 올린다 (--confirm 없이는 아무것도 안 함)
 node scripts/run-fault-injection.mjs OPS-001 --confirm
@@ -151,7 +159,7 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm
 끝난다. 계정 Rate Limit Bucket 용량(5)이 잠금 임계치(5회)와 같은 것과 그로 인한 `401`/`429` 판정
 기준은 `README.md`의 "구현 범위 (현재)" 참고. **실 배포 대상으로 돌릴 계획이라면 `README.md`의
 "주의사항"에 있는 AUTH-034 공유 네트워크 경고를 반드시 먼저 읽을 것** — 로컬(자체 서명 인증서, 격리된 Docker
-네트워크)에서는 안전하다.
+네트워크)에서는 안전하다. 이 로컬 진단은 실제 CloudFront·ALB 헤더 전달 형태까지 증명하지 않는다.
 
 ## 이 모드가 증명하지 못하는 것
 

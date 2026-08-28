@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // 전체 게이트 — 필수 게이트(run-mandatory-gate.mjs) 전부 + 조건부/파괴적 시나리오
-// (배포 Frontend–Backend 종단 검증.md §4 조건부 Browser, §5의 AUTH-030~035·OPS-002, §6의
+// (배포 Frontend–Backend 종단 검증.md §4 조건부 Browser, §5의 AUTH-030/031/033·OPS-002, §6의
 // OPS-005, §10의 QUEUE-003·CATALOG-004~006)까지 한 번에 실행한다.
+// AUTH-034는 프록시 환경 의존 진단으로 재분류되어 이 게이트에 포함하지 않는다.
 //
 // 파괴적 플래그(RUN_DESTRUCTIVE_AUTH_TESTS, RUN_FAULT_INJECTION_TESTS)는 이 스크립트가 절대
 // 대신 켜주지 않는다 — 실행하는 사람이 이 명령을 돌리기 "전에" 직접 export해야만 해당
 // 케이스가 실제로 실행된다. 안 켜져 있으면 관련 단계를 건너뛰고 무엇을 export해야 켜지는지
-// 안내만 출력한다. FE-BE-012·AUTH-030/031/033/034는 각 파일 안의 기존 안전장치가 그대로
+// 안내만 출력한다. FE-BE-012·AUTH-030/031/033은 각 파일 안의 기존 안전장치가 그대로
 // 처리한다(설정 안 돼 있으면 파일 자체가 SKIP_PRECONDITION으로 기록) — AUTH-030/031은 이
 // 플래그와 별개로 AUTH_LOCKOUT_01 정적 계정이 없어도 같은 방식으로 SKIP된다. OPS-001/002/003/005는
 // 개별 스크립트가 `--confirm` CLI 인자를 직접 요구하는 구조라 이 오케스트레이터가 대신
@@ -18,12 +19,12 @@
 // api/scenarios/auth-scenarios(-account-nonexposure).js의 AUTH-015는 RUN_DESTRUCTIVE_AUTH_TESTS=true일 때
 // AUTH_LOCKOUT_01 계정에 틀린 비밀번호 5회 + 맞는 비밀번호 1회(총 6회)를 보내 로그인 Rate Limit
 // Bucket(용량 5, 분당 1 리필)을 완전히 소진시킨다. 바로 뒤이어 실행되는 이 파일의
-// AUTH-030,031,033,034 단계는 api/scenarios/auth-lockout-ratelimit.js를 호출하는데, 그중
+// AUTH-030,031,033 단계는 api/scenarios/auth-lockout-ratelimit.js를 호출하는데, 그중
 // AUTH-030은 같은 AUTH_LOCKOUT_01 계정에 틀린 비밀번호 5회를 보내고 다섯 응답 전부가 정확히
-// 401이어야 한다고 단언한다(AUTH-031/033/034는 401 또는 429를 모두 허용해 영향받지 않음).
+// 401이어야 한다고 단언한다(AUTH-031/033은 401 또는 429를 모두 허용해 영향받지 않음).
 // AUTH-015 직후라 Bucket이 아직 비어 있으면 AUTH-030의 초반 요청이 401 대신 429를 받아
 // 실제 제품 결함이 아닌 순전한 실행 순서 때문에 FAIL_ASSERTION이 발생한다. 이를 막기 위해
-// AUTH-030,031,033,034 단계 직전에 RUN_DESTRUCTIVE_AUTH_TESTS=true일 때만(그 값이 아니면
+// AUTH-030,031,033 단계 직전에 RUN_DESTRUCTIVE_AUTH_TESTS=true일 때만(그 값이 아니면
 // AUTH-015도 파괴적으로 실행되지 않았고 이 단계도 자체 SKIP되므로 대기가 무의미하다) Bucket이
 // 다시 채워질 만큼(약 65초, 과거 실행 관찰 기준) 그대로 대기한다.
 //
@@ -144,14 +145,14 @@ export async function runFullGate() {
   }
 
   steps.push(
-    await runStep('AUTH-030,031,033,034 (k6 잠금·Rate Limit)', () => {
+    await runStep('AUTH-030,031,033 (k6 잠금·계정 Rate Limit)', () => {
       guardFlag(
         'RUN_DESTRUCTIVE_AUTH_TESTS',
-        'AUTH-030/031/033/034 전체',
+        'AUTH-030/031/033 전체',
         'RUN_DESTRUCTIVE_AUTH_TESTS=true를 export한 뒤 다시 실행하세요.',
       )
       return runK6Scenario('api/scenarios/auth-lockout-ratelimit.js', 'AUTH-lockout', [
-        'AUTH-030', 'AUTH-031', 'AUTH-033', 'AUTH-034',
+        'AUTH-030', 'AUTH-031', 'AUTH-033',
       ])
     }),
   )
@@ -180,18 +181,6 @@ export async function runFullGate() {
         return runNodeScript('scripts/run-fault-injection.mjs', [opsId, '--confirm'])
       }),
     )
-  }
-
-  if (
-    process.env.RUN_DESTRUCTIVE_AUTH_TESTS === 'true' &&
-    !isLocalRehearsal &&
-    process.env.RUN_FAULT_INJECTION_TESTS === 'true'
-  ) {
-    console.log(
-      '  ⏳ AUTH-034(방금 실행됨)가 Client-IP Rate Limit Bucket을 소진시켰습니다 — ' +
-        'OPS-002의 사전 401 판정이 429로 오염되지 않도록 완전히 보충되는 5분 동안 대기합니다.',
-    )
-    await new Promise((r) => setTimeout(r, 5 * 60 * 1000))
   }
 
   steps.push(

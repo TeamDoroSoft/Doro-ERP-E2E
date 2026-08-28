@@ -104,7 +104,7 @@ Bucket 주의"와 `api/README.md` 참고. `ORDER-001`은 §10 정의 검토 과�
 | `SALES-001` | A | `GET /api/v1/sales/daily?businessDate=<오늘>` `200` — KST 자정 전후 5분은 `SKIP_PRECONDITION` | `api/scenarios/audit-sales-connectivity.js` |
 
 `QUEUE-003`은 취소된 Entry 행과 대기 순번 소비를 실 테넌트 데이터에 영구히 남기는 상태 변경 흐름이라
-`RUN_DESTRUCTIVE_QUEUE_TESTS=true`를 명시해야 실행된다 — `AUTH-030`~`034`가 쓰는
+`RUN_DESTRUCTIVE_QUEUE_TESTS=true`를 명시해야 실행된다 — `AUTH-030`/`031`/`033`이 쓰는
 `RUN_DESTRUCTIVE_AUTH_TESTS`는 인증 도메인 전용 위험(계정 잠금·Rate Limit)을 이름에 명시한 플래그라
 대기열 도메인 상태 변경에 재사용하지 않고 별도 플래그를 뒀다. `CATALOG-004`~`006`도 같은 이유로
 `RUN_DESTRUCTIVE_CATALOG_TESTS`라는 Catalog 도메인 전용 플래그를 별도로 뒀다 — 셋 다 하나로 묶은
@@ -121,7 +121,7 @@ Bucket 주의"와 `api/README.md` 참고. `ORDER-001`은 §10 정의 검토 과�
 같은 물리 계정이므로 계정 단위 Rate Limit Bucket도 공유한다.
 자세한 내용은 `api/README.md` 참고.
 
-**잠금·Rate Limit(`AUTH-030`,`031`,`033`,`034`)과 장애 주입(`OPS-001`,`003`)도 추가했다** — 기본으로는
+**잠금·계정 Rate Limit(`AUTH-030`,`031`,`033`)과 장애 주입(`OPS-001`,`003`)도 추가했다** — 기본으로는
 실행되지 않는다(안전 장치):
 
 - `api/scenarios/auth-lockout-ratelimit.js`는 `RUN_DESTRUCTIVE_AUTH_TESTS=true`를 명시해야 실행된다.
@@ -263,7 +263,7 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 
 ## 주의사항
 
-- **AUTH-034 공유 네트워크 경고**: 위 명령을 실 배포(dev/stage/prod) 대상으로 바꿔서 돌릴 계획이라면 `AUTH-034`를 반드시 먼저 `api/README.md`의 경고를 읽을 것 — 공유 네트워크에서 돌리면 같은 IP를 쓰는 다른 실사용자까지 막힐 수 있다.
+- **AUTH-034 환경 진단 경고**: `AUTH-034`는 full/mandatory gate에서 제외됐다. 전용 `RUN_AUTH_IP_DIAGNOSTIC=true` 실행은 실제 Source IP 버킷을 소진하므로, 실 배포 대상으로 실행하기 전에 반드시 `api/README.md`의 격리 Source 및 관측 한계 설명을 읽을 것.
 - **EKS 접근 미검증 경고**: `FE-BE-012`(`browser/tests/fe-be-conditional.spec.ts`)의 실 배포 경로, `scripts/run-fault-injection.mjs`의 `OPS-001`/`OPS-003`(로컬 전용, 실 배포 미대응), `scripts/verify-provider-malformed-response.mjs`(`OPS-002`), `scripts/verify-partial-pod-failure.mjs`(`OPS-005`)는 전부 실 EKS 클러스터 접근이 필요한데, 이 리포를 작업한 환경에는 그 접근 권한이 없어서 실제로 실행해 검증하지 못했다. 최초 실행 전 결과를 직접 확인해야 한다.
 - **`OPS-005`는 파괴적이다**: 실제로 `store-access-api` Pod 1개를 `kubectl delete pod`로 지운다 — 승인된 점검 시간에만, `--confirm` 필요.
 - **`OPS-002`는 영향 범위가 넓다**: 실 `store-access-api` Service의 `spec.selector`를 디코이 Pod로 임시 교체한다(재시작이 필요 없고 즉시 반영·즉시 원복되는 방식을 택했다). 다만 `STORE_ACCESS_INTERNAL_BASE_URL` 하나를 edge-api의 로그인·Session Context·Kiosk·Management·비밀번호 변경 Forwarder 6개가 전부 공유하기 때문에, 교체돼 있는 동안에는 store-access-api를 쓰는 edge-api의 모든 통신이 함께 영향을 받는다(`OPS-005`보다 넓은 범위) — 승인된 점검 시간에만, `--confirm` 필요.
@@ -319,12 +319,12 @@ AWS SSO 세션이 만료되었다면 먼저 `aws sso login --profile <profile-na
 개별 스위트를 하나씩 손으로 이어붙이지 않도록 `scripts/run-mandatory-gate.mjs`와 `scripts/run-full-gate.mjs` 두 오케스트레이션 스크립트를 추가했다.
 
 - **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`,`022`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `QUEUE-001`~`002`(k6 `api/scenarios/queue-connectivity.js`) → `CATALOG-001`~`003`(k6 `api/scenarios/catalog-connectivity.js`) → `AUDIT-001`,`SALES-001`(k6 `api/scenarios/audit-sales-connectivity.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구). `FE-BE-022`는 `AUTH_ROLE_MANAGER_01`/`AUTH_ROLE_OWNER_01` 정적 계정이 없으면 SKIP된다. `QUEUE-001`~`002`/`CATALOG-001`~`003` 단계는 `session-flow.js` 직후 `AUTH_VALID_01` 로그인을 1회씩 더 쓰고, 그 뒤 `AUDIT-001`/`SALES-001` 단계는 별도 프로세스(별도 파일)라 로그인이 1회 더 필요해 그 앞에서 5분을 추가로 대기한다 — 이 순서를 바꾸지 말 것(아래 "⚠️ 계정 Rate Limit Bucket 주의"·`api/README.md` 참고).
-- **`node scripts/run-full-gate.mjs`** — 위 전체 + `QUEUE-003`(안내만 출력 — `RUN_DESTRUCTIVE_QUEUE_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `queue-connectivity.js` 단계 안에서 이미 실행됨) → `CATALOG-004`~`006`(안내만 출력 — `RUN_DESTRUCTIVE_CATALOG_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `catalog-connectivity.js` 단계 안에서 이미 실행됨) → `FE-BE-010`~`015`,`020`,`021`,`023`~`027`(Playwright `tests/fe-be-conditional.spec.ts` — `FE-BE-020`/`021`/`024`는 `RUN_DESTRUCTIVE_ORDER_TESTS=true`, `FE-BE-023`은 `RUN_DESTRUCTIVE_QUEUE_TESTS=true`, `FE-BE-025`는 `RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) → `AUTH-030`/`031`/`033`/`034`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다.
+- **`node scripts/run-full-gate.mjs`** — 위 전체 + `QUEUE-003`(안내만 출력 — `RUN_DESTRUCTIVE_QUEUE_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `queue-connectivity.js` 단계 안에서 이미 실행됨) → `CATALOG-004`~`006`(안내만 출력 — `RUN_DESTRUCTIVE_CATALOG_TESTS=true`면 위 `run-mandatory-gate.mjs`의 `catalog-connectivity.js` 단계 안에서 이미 실행됨) → `FE-BE-010`~`015`,`020`,`021`,`023`~`027`(Playwright `tests/fe-be-conditional.spec.ts` — `FE-BE-020`/`021`/`024`는 `RUN_DESTRUCTIVE_ORDER_TESTS=true`, `FE-BE-023`은 `RUN_DESTRUCTIVE_QUEUE_TESTS=true`, `FE-BE-025`는 `RUN_DESTRUCTIVE_CATALOG_TESTS=true` 필요) → `AUTH-030`/`031`/`033`(k6 `api/scenarios/auth-lockout-ratelimit.js`) → `OPS-001`/`OPS-003`(`scripts/run-fault-injection.mjs`) → `OPS-002`(`scripts/verify-provider-malformed-response.mjs`) → `OPS-005`(`scripts/verify-partial-pod-failure.mjs`)까지 전부 돈다. `AUTH-034`는 별도 환경 진단이므로 포함하지 않는다.
 - `OPS-001`/`OPS-003`은 `DORO_ENVIRONMENT`가 `local`로 시작할 때만 실제로 실행된다 — 그 외의(실 배포) 대상에서는 `RUN_FAULT_INJECTION_TESTS` 설정과 무관하게 자동으로 SKIP된다. `scripts/run-fault-injection.mjs`가 로컬 Docker 주소·컨테이너 이름에 하드코딩돼 있어 실 배포를 대상으로 실행할 수 없기 때문에, 잘못된(로컬) 대상을 검증하고도 실 배포를 검증한 것처럼 보이는 상황을 막기 위한 안전장치다.
 - 반대로 `OPS-002`/`OPS-005`는 `DORO_ENVIRONMENT`가 `local`로 시작하면 자동으로 SKIP된다 — 둘 다 `kubectl`로 실 EKS의 `store-access-api`를 직접 건드리는 실 배포 전용 스크립트라, 로컬 리허설 대상에서 실행할 이유가 없다(이 머신에 다른 실제 클러스터를 가리키는 `kubectl` 컨텍스트가 우연히 설정돼 있다면 로컬 리허설 도중 그 클러스터를 건드리는 일을 막기 위함).
-- `RUN_DESTRUCTIVE_AUTH_TESTS=true`로 `run-full-gate.mjs`를 돌리면 `AUTH-030`~`034` 단계 직전에 **약 65초를 그대로 대기한다** — 바로 앞에서 `AUTH-015`가 `AUTH_LOCKOUT_01`의 Rate Limit Bucket을 소진시켜 놓고 가기 때문에, 대기 없이 곧바로 `AUTH-030`을 돌리면 5회 연속 `401`이어야 할 응답 중 일부가 `429`로 나와 실제 결함이 아닌 순서 문제로 FAIL이 날 수 있다.
+- `RUN_DESTRUCTIVE_AUTH_TESTS=true`로 `run-full-gate.mjs`를 돌리면 `AUTH-030`/`031`/`033` 단계 직전에 **약 65초를 그대로 대기한다** — 바로 앞에서 `AUTH-015`가 `AUTH_LOCKOUT_01`의 Rate Limit Bucket을 소진시켜 놓고 가기 때문에, 대기 없이 곧바로 `AUTH-030`을 돌리면 5회 연속 `401`이어야 할 응답 중 일부가 `429`로 나와 실제 결함이 아닌 순서 문제로 FAIL이 날 수 있다.
 - 두 스크립트 다 `DORO_RUN_ID`를 자동 생성하거나 이미 export돼 있으면 그대로 쓰고, 한 단계가 실패해도 나머지 단계는 계속 진행한 뒤 마지막에 종합 결과를 보여주고 실패가 하나라도 있으면 exit code 1로 끝난다. **`build-combined-summary.mjs` 단계의 exit code는 완화 판정(`frontBackConnected`)이 아니라 문서 §7 그대로의 엄격 판정(`passConnected`) 기준이다** — 둘이 갈리면 어느 §7 세부 조건이 걸렸는지 콘솔에 같이 출력된다.
-- **파괴적 플래그는 오케스트레이터가 절대 자동으로 켜지 않는다** — `RUN_DESTRUCTIVE_AUTH_TESTS=true`(`AUTH-030`/`031`/`033`/`034`용), `RUN_DESTRUCTIVE_QUEUE_TESTS=true`(`QUEUE-003`과 `FE-BE-023`용), `RUN_DESTRUCTIVE_CATALOG_TESTS=true`(`CATALOG-004`~`006`과 `FE-BE-025`용), `RUN_DESTRUCTIVE_ORDER_TESTS=true`(`FE-BE-020`/`021`/`024`용), `RUN_FAULT_INJECTION_TESTS=true`(`FE-BE-012` 및 `OPS-001`/`002`/`003`/`005`의 `--confirm` 대신 재사용됨)를 실행 전 직접 export해야만 해당 케이스가 실제로 돈다. 안 켜져 있으면 무엇을 export해야 하는지 안내 문구를 찍고 그 단계만 SKIP한다.
+- **파괴적 플래그는 오케스트레이터가 절대 자동으로 켜지 않는다** — `RUN_DESTRUCTIVE_AUTH_TESTS=true`(`AUTH-030`/`031`/`033`용), `RUN_DESTRUCTIVE_QUEUE_TESTS=true`(`QUEUE-003`과 `FE-BE-023`용), `RUN_DESTRUCTIVE_CATALOG_TESTS=true`(`CATALOG-004`~`006`과 `FE-BE-025`용), `RUN_DESTRUCTIVE_ORDER_TESTS=true`(`FE-BE-020`/`021`/`024`용), `RUN_FAULT_INJECTION_TESTS=true`(`FE-BE-012` 및 `OPS-001`/`002`/`003`/`005`의 `--confirm` 대신 재사용됨)를 실행 전 직접 export해야만 해당 케이스가 실제로 돈다. `RUN_AUTH_IP_DIAGNOSTIC`은 오케스트레이터가 읽지 않으며 AUTH-034 전용 명령에서만 사용한다.
 
 ```bash
 export DORO_FRONTEND_ORIGIN=https://doro.minseok.click
@@ -438,7 +438,7 @@ JMESPath `contains()`가 타입 오류를 냈다 — `Aliases.Items || \`[]\``�
 계정 값이 다 채워져 있어도, 아래 플래그를 실행 전 직접 export하지 않으면 해당 플래그가 지키는
 케이스는 여전히 SKIP된다(오케스트레이터가 대신 켜주지 않는다):
 
-- `RUN_DESTRUCTIVE_AUTH_TESTS=true` — `AUTH-030`/`031`/`033`/`034`(`AUTH_LOCKOUT_01` 사용)
+- `RUN_DESTRUCTIVE_AUTH_TESTS=true` — `AUTH-030`/`031`/`033`(`AUTH_LOCKOUT_01` 사용)
 - `RUN_DESTRUCTIVE_ORDER_TESTS=true` — `FE-BE-020`/`021`/`024`(주문 생성·취소·결제 시작·PENDING 복구, `AUTH_VALID_01` 사용 —
   주문 취소 API가 소프트 취소라 실 테넌트에 이력이 영구히 남는다)
 - `RUN_DESTRUCTIVE_QUEUE_TESTS=true` — `QUEUE-003`(k6, `AUTH_VALID_01` 사용)과 `FE-BE-023`(화면
@@ -660,15 +660,23 @@ node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
 ### 잠금·Rate Limit·장애 주입 (선택, 기본 비활성)
 
 ```bash
-# AUTH-030/031/033/034 — 5회 실패 계정 잠금과 계정·IP Rate Limit Bucket 소진.
+# AUTH-030/031/033 — 5회 실패 계정 잠금과 계정 Rate Limit Bucket 소진.
 # AUTH-030/031은 AUTH_LOCKOUT_01 정적 계정이 로컬엔 없어서 SKIP_PRECONDITION으로 끝난다 —
-# 033/034는 계정이 필요 없는 케이스라 그대로 돈다.
+# 033은 계정이 필요 없는 케이스라 그대로 돈다.
 RUN_DESTRUCTIVE_AUTH_TESTS=true \
 DORO_API_ORIGIN=https://localhost:8080 \
 DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
   k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-lockout-ratelimit.js \
   > /tmp/k6-lockout.log 2>&1
-node api/lib/build-report.mjs /tmp/k6-lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033,AUTH-034
+node api/lib/build-report.mjs /tmp/k6-lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033
+
+# AUTH-034는 full gate와 분리된 환경 진단이다. 격리된 Source에서만 명시적으로 실행한다.
+RUN_AUTH_IP_DIAGNOSTIC=true \
+DORO_API_ORIGIN=https://localhost:8080 \
+DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
+  k6 run --insecure-skip-tls-verify --log-format=raw api/scenarios/auth-ip-ratelimit-diagnostic.js \
+  > /tmp/k6-auth-ip-diagnostic.log 2>&1
+node api/lib/build-report.mjs /tmp/k6-auth-ip-diagnostic.log AUTH-ip-diagnostic AUTH-034
 
 # OPS-001/003 — Store Access·Redis 컨테이너를 실제로 멈췄다 올린다 (--confirm 없이는 아무것도 안 함)
 node scripts/run-fault-injection.mjs OPS-001 --confirm
@@ -676,7 +684,7 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm
 ```
 
 `AUTH_VALID_01` 값은 이 스크립트가 실제로 쓰지는 않지만 `loadDeployEnv()`가 공통으로 요구해서 더미 값을
-넣어야 한다. 2026-08-24에 로컬 Docker Prod-like 스택에서 `AUTH-030/031/033/034` 4/4,
+넣어야 한다. 2026-08-24에 로컬 Docker Prod-like 스택에서 당시 통합 시나리오였던 `AUTH-030/031/033/034` 4/4,
 `OPS-001`/`OPS-003` 둘 다 PASS(장애 주입 → `503 LOGIN_UNAVAILABLE` → 컨테이너 재기동 → 정상 `401` 복구)까지
 확인했다(**이것도 Provisioning 폴백을 삭제하기 전 기록이다** — 지금은 `AUTH-030`/`031`이
 `AUTH_LOCKOUT_01` 정적 계정 없이는 `SKIP_PRECONDITION`으로만 끝난다). 가장 중요한 발견은 `AUTH-031`이다 — 계정 Rate Limit Bucket 용량(5)이 잠금 임계치(5회 실패)와
@@ -684,7 +692,7 @@ node scripts/run-fault-injection.mjs OPS-003 --confirm
 (정확한 비밀번호를 넣어도 마찬가지). Bucket이 먼저 소진되기 때문이며, 로컬 기본값(용량 5/분당 1)이
 실제 운영 기본값과 같으므로 운영에서도 같은 현상이 예상된다. **실 배포 대상으로 돌릴 계획이라면
 위 "주의사항"의 AUTH-034 공유 네트워크 경고를 반드시 먼저 읽을 것** — 로컬(자체 서명 인증서, 격리된
-Docker 네트워크)에서는 안전하다.
+Docker 네트워크)에서는 안전하다. 현재 AUTH-034는 이 통합 시나리오가 아니라 별도 환경 진단으로 실행한다.
 
 ### 이 모드가 증명하지 못하는 것
 

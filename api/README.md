@@ -67,10 +67,10 @@ DORO_API_ORIGIN=https://localhost:8080 \
 중 하나라도 없으면 그 계정을 쓰는 케이스만 `SKIP_PRECONDITION`으로 건너뛰고 나머지는 그대로
 실행된다 — 폴백 없음.
 
-## `AUTH-030`/`031`/`033`/`034`: 잠금·Rate Limit (기본 비활성)
+## `AUTH-030`/`031`/`033`: 잠금·계정 Rate Limit (기본 비활성)
 
 `api/scenarios/auth-lockout-ratelimit.js`는 `RUN_DESTRUCTIVE_AUTH_TESTS=true`를 명시적으로 줘야
-실행된다(그 외엔 4개 케이스 전부 `SKIP_PRECONDITION`) — 배포 Frontend–Backend 종단 검증.md §2가 요구하는
+실행된다(그 외엔 3개 케이스 전부 `SKIP_PRECONDITION`) — 배포 Frontend–Backend 종단 검증.md §2가 요구하는
 "잠금·Rate Limit은 전용 Fixture와 격리 Source가 있을 때만 실행" 안전장치 그대로다.
 
 ```bash
@@ -79,17 +79,36 @@ DORO_API_ORIGIN=https://doro.minseok.click \
 DORO_AUTH_VALID_01_TENANT_CODE=... DORO_AUTH_VALID_01_LOGIN_ID=... DORO_AUTH_VALID_01_PASSWORD=... \
 DORO_AUTH_LOCKOUT_01_TENANT_CODE=... DORO_AUTH_LOCKOUT_01_LOGIN_ID=... DORO_AUTH_LOCKOUT_01_PASSWORD=... \
   k6 run --log-format=raw api/scenarios/auth-lockout-ratelimit.js > /tmp/lockout.log 2>&1
-node api/lib/build-report.mjs /tmp/lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033,AUTH-034
+node api/lib/build-report.mjs /tmp/lockout.log AUTH-lockout AUTH-030,AUTH-031,AUTH-033
 ```
 
 - `AUTH-030`/`031`(5회 실패 계정 잠금)은 전용 정적 계정 `AUTH_LOCKOUT_01`을 쓴다(멱등 — 이미
   잠겨 있어도 안전) — 없으면 이 둘만 `SKIP_PRECONDITION`.
-- `AUTH-033`(존재하지 않는 loginId로 계정 Bucket 소진)·`AUTH-034`(격리 IP에서 IP Bucket 소진)는
-  실재하지 않는 가짜 tenantCode/loginId만 쓰므로 정적 계정이 없어도 실행된다.
+- `AUTH-033`(존재하지 않는 loginId로 계정 Bucket 소진)은 실재하지 않는 가짜 tenantCode/loginId만
+  쓰므로 정적 계정이 없어도 실행된다.
 - `AUTH-032`(잠금 1→2→4→8→15분 단계 증가)는 실제 clock으로 15분 이상 기다려야 해서 아직 넣지 않았다.
 - `AUTH-035`(충분한 보충 시간 후 재요청)는 시간 비용 때문이 아니라, 바로 위 `AUTH-031` 조사 과정에서
   사실상 이미 관찰돼(계정 Bucket 리필과 잠금 만료 시점이 겹쳐 `200`이 나오는 것을 확인) 별도로
   구현하지 않았다.
+
+## `AUTH-034`: Source IP Rate Limit 환경 진단 (게이트 제외)
+
+`AUTH-034`는 CloudFront·ALB·VPC Origin의 실제 client IP 전달 형태에 의존하며, 현재 E2E 결과만으로
+실패 원인을 판별할 수 없다. 따라서 full/mandatory gate에서 제외하고
+`api/scenarios/auth-ip-ratelimit-diagnostic.js`를 명시적으로 실행할 때만 진단 결과를 기록한다.
+
+```bash
+RUN_AUTH_IP_DIAGNOSTIC=true \
+DORO_API_ORIGIN=https://doro.minseok.click \
+DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AUTH_VALID_01_PASSWORD=unused \
+  k6 run --log-format=raw api/scenarios/auth-ip-ratelimit-diagnostic.js > /tmp/auth-ip-diagnostic.log 2>&1
+node api/lib/build-report.mjs /tmp/auth-ip-diagnostic.log AUTH-ip-diagnostic AUTH-034
+```
+
+실패는 client IP 버킷이 수렴하지 않는 환경 이상을 탐지하지만 배포 게이트 실패로 집계하지 않는다. 원인
+확정에는 Edge가 관측한 `remoteAddr`, 원본 XFF, trusted 여부, fallback 사유와 resolved IP 증거가 별도로
+필요하다. 로컬 Compose 검증은 알려진 XFF 입력에서 하나의 Redis 버킷으로 수렴하는 회귀만 증명하며 실제
+CloudFront·ALB 헤더 전달 형태는 증명하지 않는다.
 
 **⚠️ `AUTH-034`는 실 배포(dev/stage/prod) 대상으로 절대 공유 네트워크에서 실행하지 말 것.** Client IP
 Rate Limit Bucket을 의도적으로 소진시키는 케이스라, 사무실 Wi-Fi·공유 VPN·공유 NAT처럼 다른 사람과
@@ -182,7 +201,7 @@ node api/lib/build-report.mjs /tmp/queue-connectivity.log QUEUE QUEUE-001,QUEUE-
 - `QUEUE-003`(Entry 등록 → `WAITING` 확인 → 취소 → `CANCELLED` 확인 → 재취소)은
   `RUN_DESTRUCTIVE_QUEUE_TESTS=true`가 있어야 실행된다 — 취소된 Entry 행과 그 Store·영업일 대기
   순번 소비를 실 테넌트 데이터에 영구히 남기기 때문이다(배포 Frontend–Backend 종단 검증.md §10 참고).
-  `AUTH-030`~`034`가 쓰는 `RUN_DESTRUCTIVE_AUTH_TESTS`는 인증 도메인 전용 위험(계정 잠금·Rate Limit)을
+  `AUTH-030`/`031`/`033`이 쓰는 `RUN_DESTRUCTIVE_AUTH_TESTS`는 인증 도메인 전용 위험(계정 잠금·Rate Limit)을
   이름에 명시한 플래그라 재사용하지 않고 별도 플래그를 뒀다.
 - `Idempotency-Key`는 k6 goja 런타임에 `crypto.randomUUID()`가 없어 `api/lib/provisioning.js`의
   `randomUuidV4()`(`Math.random()`만으로 RFC 4122 버전/변형 비트를 채우는 최소 구현)로 매 실행마다
