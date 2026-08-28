@@ -287,6 +287,35 @@ OWNER/MANAGER/STAFF 세 계정이 모두 있어야 실행). Provisioning API를 
 
 ## 오케스트레이션 스크립트 사용법
 
+### 사용자 터미널 권장 실행: 사전 준비 자동화
+
+로컬 터미널에서는 아래 래퍼를 권장합니다. 현재 AWS CLI 자격 증명으로 로그인한 계정이 프로젝트 계정 `727646470302`인지 확인하고, k6·Playwright Chromium·필수 환경변수·배포 식별 정보를 점검한 뒤 기존 full-gate를 실행합니다.
+
+~~~powershell
+# 기본 실행
+node scripts/prepare-and-run-full-gate.mjs
+
+# 특정 AWS CLI 프로필 사용
+node scripts/prepare-and-run-full-gate.mjs --aws-profile <profile-name>
+
+# 실제 테스트를 시작하지 않고 준비 상태만 확인
+node scripts/prepare-and-run-full-gate.mjs --preflight-only
+~~~
+
+환경 파일은 기본적으로 `.env.deploy-e2e.local`을 사용하며, 다른 파일은 `--env-file <path>`로 지정합니다. 민감한 값은 콘솔에 출력하지 않습니다. 기본 실행에서는 파괴적 시나리오를 모두 비활성화하고, 필요한 경우에만 아래처럼 명시적으로 활성화합니다.
+
+~~~powershell
+node scripts/prepare-and-run-full-gate.mjs --destructive-auth --destructive-order
+~~~
+
+장애 주입은 운영 영향 가능성이 있으므로 이중 확인이 필요합니다.
+
+~~~powershell
+node scripts/prepare-and-run-full-gate.mjs --fault-injection --confirm-production-impact
+~~~
+
+AWS SSO 세션이 만료되었다면 먼저 `aws sso login --profile <profile-name>`을 실행합니다. 래퍼는 도구를 자동 설치하지 않으며, 누락된 도구와 해결 명령을 안내하고 중단합니다. CI나 고급 디버깅에서는 기존 `run-full-gate.mjs`를 직접 사용할 수 있습니다.
+
 개별 스위트를 하나씩 손으로 이어붙이지 않도록 `scripts/run-mandatory-gate.mjs`와 `scripts/run-full-gate.mjs` 두 오케스트레이션 스크립트를 추가했다.
 
 - **`node scripts/run-mandatory-gate.mjs`** — 아래 순서로 실행한다: `FE-BE-001`~`006`,`022`(Playwright `tests/fe-be-mandatory.spec.ts`) → `AUTH-001`~`004`,`010`,`020`~`024`(k6 `api/scenarios/auth-mandatory.js`) → `AUTH-011`~`015`(k6 `api/scenarios/auth-account-nonexposure.js`) → `SESS-001`~`003`,`006`,`007`(+`004`/`005` 조건부)(k6 `api/scenarios/session-flow.js`) → `QUEUE-001`~`002`(k6 `api/scenarios/queue-connectivity.js`) → `CATALOG-001`~`003`(k6 `api/scenarios/catalog-connectivity.js`) → `AUDIT-001`,`SALES-001`(k6 `api/scenarios/audit-sales-connectivity.js`) → `OPS-004`(`scripts/verify-edge-boundary.mjs`, 비파괴 관찰) → 종합 판정(`scripts/build-combined-summary.mjs`). 전부 파괴적 플래그 없이 안전 — CI에서 매 배포마다 완전 자동 실행해도 된다. `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`/`DORO_AUTH_VALID_01_*` 등 필요한 값은 미리 export해둬야 한다(각 하위 실행이 `loadDeployEnv()`로 직접 요구). `FE-BE-022`는 `AUTH_ROLE_MANAGER_01`/`AUTH_ROLE_OWNER_01` 정적 계정이 없으면 SKIP된다. `QUEUE-001`~`002`/`CATALOG-001`~`003` 단계는 `session-flow.js` 직후 `AUTH_VALID_01` 로그인을 1회씩 더 쓰고, 그 뒤 `AUDIT-001`/`SALES-001` 단계는 별도 프로세스(별도 파일)라 로그인이 1회 더 필요해 그 앞에서 5분을 추가로 대기한다 — 이 순서를 바꾸지 말 것(아래 "⚠️ 계정 Rate Limit Bucket 주의"·`api/README.md` 참고).
