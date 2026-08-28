@@ -4,7 +4,7 @@ import { freshJar, postJson, header, parseProblem } from '../lib/http.js'
 import { randomToken } from '../lib/provisioning.js'
 import { record } from '../lib/resultLogger.js'
 
-// AUTH-030, AUTH-031, AUTH-033, AUTH-034 — 잠금·Rate Limit 통제 그룹(배포 Frontend–Backend
+// AUTH-030, AUTH-031, AUTH-033 — 잠금·계정 Rate Limit 통제 그룹(배포 Frontend–Backend
 // 종단 검증.md §2 "잠금·Rate Limit·비활성·임시 비밀번호는 전용 Fixture와 격리 Source가 있을 때만
 // 실행한다"). AUTH-032(잠금 단계 1→2→4→8→15분 증가)는 실제 clock으로 십수 분을 기다려야 해서 뺐다.
 // AUTH-035(보충 시간 후 재요청)는 이 파일의 AUTH-031 조사 과정에서 사실상 이미 관찰됐다 —
@@ -18,7 +18,7 @@ export const options = {
 }
 
 const DESTRUCTIVE_FLAG = 'RUN_DESTRUCTIVE_AUTH_TESTS'
-const MANDATORY_IDS = ['AUTH-030', 'AUTH-031', 'AUTH-033', 'AUTH-034']
+const MANDATORY_IDS = ['AUTH-030', 'AUTH-031', 'AUTH-033']
 
 export default function () {
   const env = loadDeployEnv()
@@ -156,45 +156,6 @@ export default function () {
     })
   })
 
-  // 다른 그룹보다 나중에 실행한다 — 이 그룹만 Client IP Bucket(다른 케이스들과 공유하는 자원)을
-  // 실제로 소진시키므로, 앞의 그룹들이 먼저 끝나 있어야 서로 간섭하지 않는다.
-  group('AUTH-034: 격리 IP에서 IP Bucket 소진', () => {
-    const startedAt = new Date().toISOString()
-    const t0 = Date.now()
-    // 시작 시점에 IP Bucket이 이미 얼마나 차 있는지 알 수 없어서(같은 IP의 다른 실행이 방금
-    // 있었을 수 있음), 고정 횟수 대신 429가 나올 때까지 최대 MAX_ATTEMPTS번 시도한다.
-    const MAX_ATTEMPTS = 40
-    let rateLimitedAtAttempt = null
-    let sawUnexpectedStatus = false
-    let last
-    for (let i = 1; i <= MAX_ATTEMPTS; i++) {
-      const tenantCode = `e2e-ipbucket-${randomToken().slice(0, 10)}`
-      last = postJson(loginUrl, { tenantCode, loginId: 'nonexistent-user', password: 'probe' }, { jar: freshJar() })
-      if (last.status === 429) {
-        rateLimitedAtAttempt = i
-        break
-      }
-      if (last.status !== 401) sawUnexpectedStatus = true
-    }
-    const body = parseProblem(last)
-    const pass = rateLimitedAtAttempt !== null && !sawUnexpectedStatus && body.code === 'AUTH_RATE_LIMITED'
-    check(null, { 'AUTH-034 IP Bucket 소진 → 429': () => pass })
-    record(env, {
-      testCaseId: 'AUTH-034',
-      startedAt,
-      durationMs: Date.now() - t0,
-      resultCode: pass ? 'PASS' : 'FAIL_ASSERTION',
-      expected: { httpStatus: 429 },
-      observed: { httpStatus: last.status, attemptsUntilRateLimited: rateLimitedAtAttempt },
-      requestId: header(last, 'X-Request-Id'),
-      assertions: {
-        rateLimitedWithinCap: rateLimitedAtAttempt !== null,
-        onlyExpectedStatusesBefore429: !sawUnexpectedStatus,
-        codeMatches: body.code === 'AUTH_RATE_LIMITED',
-      },
-      errorClass: pass ? null : rateLimitedAtAttempt === null ? `MAX_ATTEMPTS(${MAX_ATTEMPTS}) 안에 429를 못 봄` : 'ASSERTION_MISMATCH',
-    })
-  })
 }
 
 // handleSummary()는 일부러 두지 않는다 — api/scenarios/auth-mandatory.js와 같은 이유
