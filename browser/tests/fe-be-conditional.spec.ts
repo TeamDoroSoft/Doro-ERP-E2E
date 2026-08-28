@@ -1372,11 +1372,13 @@ async function registerEntryViaUi(page: Page, businessDate: string, partySize: n
 // partySize는 항상 숫자로 시작하므로(인원수는 언제나 숫자), queueNumber가 몇이든 이 정규식은
 // **원천적으로 절대 매칭에 성공할 수 없는 버그**였다.
 //
-// 진단 스크립트로 직접 확인한 결과: POST /api/v1/queues/entry로 만든 Entry는 매번 즉시 GET 응답에
-// 정확히 포함돼 있었고(WAITING 상태까지 일치, rowCount도 즉시 정확), 10번 연속 확인해도 매번
-// 데이터는 처음부터 끝까지 정확한데 유일하게 실패한 건 이 정규식으로 행을 "찾는" 것 자체였다. 즉
-// 지금까지 이 파일에 있던 모든 대기 시간/재시도 로직(늘려온 Timeout들, 아래 8회 재시도)은 이 버그를
-// 전혀 해결하지 못했고 애초에 문제 자체가 아니었다 — 순수한 정규식 매칭 버그였다.
+// 진단 스크립트로 직접 확인한 결과: POST /api/v1/queues/entry로 만든 Entry는 이 10번의 확인에서는
+// 매번 즉시 GET 응답에 정확히 포함돼 있었고(WAITING 상태까지 일치, rowCount도 즉시 정확), 유일하게
+// 실패한 건 이 정규식으로 행을 "찾는" 것 자체였다 — 이 정규식 버그는 실재했고 아래처럼 고쳤다.
+// 단, 2026-08-28 재검증(아래 waitForQueueRowViaRefresh 주석 참고)에서 별개로 "등록 직후 아주 짧은
+// 시간 동안 GET 응답 자체에 새 Entry가 빠질 수 있는" 진짜 서버 측 타이밍 이슈가 추가로 확정됐다 —
+// 그러니 "타이밍은 애초에 문제가 아니었다"고 단정하지 말 것. 이 정규식 수정과 그 타이밍 이슈는
+// 서로 다른 두 개의 버그였다.
 //
 // 고친 방식: 행 전체의 concatenated text가 아니라 queueNumber가 표시되는 `<strong>` 요소 하나만
 // Exact 매칭 대상으로 삼는다. "#9"와 "#92"는 문자열 자체가 다르므로 exact:true 매칭에서 서로 절대
@@ -1387,22 +1389,42 @@ function findQueueRowByNumber(page: Page, queueNumber: number) {
   })
 }
 
-// register() 직후의 화면 반영 확인. 위 findQueueRowByNumber 주석에 적은 대로, 근본 원인이 타이밍이
-// 아니라 순수한 행 매칭 정규식 버그였음이 실측으로 확정됐다 — 서버 데이터는 등록 직후 항상 즉시
-// 정확했다. 그래서 register()가 이미 호출하는 즉시 1회 load(false)만으로 충분할 가능성이 높지만,
-// 이 세션은 여러 사람이 동시에 같은 실 배포를 쓰고 있어 네트워크 지연·서버 부하로 반영이 아주 짧게
-// 늦어질 여지는 남아 있다. 그 정도의 안전 여유만 남기고(최대 2회 재시도) 과거 두 차례에 걸쳐
-// 늘렸던 8회 "새로고침" 재시도는 과도했던 부분을 걷어냈다 — 완전히 없애면 이 문제가 다시 나타났을
-// 때 또 타이밍 탓으로 오진하게 만들 뿐이므로, 최소한의 여유는 의도적으로 남겨둔다. 만약 이 기본값을
-// 다시 늘려야 할 상황이 생긴다면, 그 전에 반드시 실측(진단 스크립트)으로 원인이 진짜 타이밍인지부터
-// 재확인할 것 — 이 파일의 행 매칭 자체는 더 이상 의심할 이유가 없다. EntryQueueView.vue의
-// "새로고침" 버튼은 search() → queue.load()를 호출하며 businessDate가 이미 채워져 있고 진행 중인
-// load()가 없는 한 항상 활성화 상태다.
+// register() 직후의 화면 반영 확인.
+//
+// 2026-08-27에 위 findQueueRowByNumber 정규식 버그를 고친 뒤 실 배포로 재검증했으나 **여전히
+// 실패했다**. 2026-08-28에 진단 스크립트로 실측 3단계를 밟아 진짜 최종 원인을 확정했다:
+//   1) 등록 직후 1초(waitForTimeout(1000)) 기다린 뒤 딱 한 번 확인 → 재시도 없이 바로
+//      visible=true. 즉 데이터/선택자 자체(정규식 버그 수정 이후)는 완전히 정상.
+//   2) 등록 직후 **대기 없이** "새로고침"을 5번 연속 클릭(매번 GET이 200으로 즉시 응답) → 5번 다
+//      visible=false. 즉 "재시도 횟수"만 늘리는 방식으로는 절대 해결되지 않는다 — 응답은 빠르게
+//      오지만 그 응답이 담은 데이터가 매번 새 Entry를 빠뜨렸다.
+//   3) 결정적 재현: 각 재시도 사이에 page.waitForTimeout(300)(딱 300ms)만 추가하고 나머지는 2)와
+//      동일하게 재현 → 1번째 재시도(총 경과 약 450ms)에서 바로 visible=true.
+//        t+97ms   register status=201
+//        t+100ms  attempt=0 visible=false
+//        (300ms 대기)
+//        t+452ms  refresh GET resolved status=200
+//        t+457ms  attempt=1 visible=true   ← 성공
+//
+// 결론: GET /api/v1/queues/entry는 등록 직후 아주 짧은 시간(수백 ms) 동안 새 Entry가 빠진 응답을
+// 줄 수 있는 실제 서버 측 Eventual Consistency 특성이 있는 것으로 보인다(정확한 서버 원인은 이
+// 저장소 범위 밖 — 확정할 필요 없음). **핵심은 "몇 번 재시도하느냐"가 아니라 "재시도 사이에 실제로
+// 얼마의 시간이 흘렀느냐"다** — 그래서 대기 없이 곧바로 재클릭하는 방식은 몇 번을 반복해도 절대
+// 해결되지 않고, 각 재시도 사이에 최소한의 실제 시간을 둬야만 한다. 아래 RETRY_DELAY_MS(500ms)는
+// 실측으로 성공을 확인한 300ms에 안전 여유를 더한 값이다. 재시도 "횟수"(maxAttempts=2)는 실측에서
+// 1번째 재시도로 이미 해결됐으므로 그대로 둬도 충분하다 — 이 기본값을 다시 만질 상황이 오면
+// 재시도 횟수가 아니라 이 대기 시간부터 의심할 것. EntryQueueView.vue의 "새로고침" 버튼은
+// search() → queue.load()를 호출하며 businessDate가 이미 채워져 있고 진행 중인 load()가 없는 한
+// 항상 활성화 상태다.
 async function waitForQueueRowViaRefresh(page: Page, queueNumber: number, maxAttempts = 2): Promise<boolean> {
   const row = findQueueRowByNumber(page, queueNumber)
+  // 실측 300ms(위 3단계) + 안전 여유. 재시도 "횟수"가 아니라 이 대기 시간이 핵심이라는 점은 위
+  // 함수 주석 참고 — 문제가 재발해도 이 값이 아니라 maxAttempts부터 만지는 실수를 반복하지 말 것.
+  const RETRY_DELAY_MS = 500
   for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
     if (await row.isVisible().catch(() => false)) return true
     if (attempt === maxAttempts) break
+    await page.waitForTimeout(RETRY_DELAY_MS)
     try {
       await Promise.all([
         page.waitForResponse(
@@ -1472,12 +1494,9 @@ test('FE-BE-023 화면에서 입장 대기 등록 → 취소', async ({ page }) 
   // (순전한 UI 렌더링 확인)과는 독립시킨다. FE-BE-020이 겪은 것과 같은 이유로, 화면 확인이
   // 타이밍 문제로 실패해도 서버에는 이미 WAITING Entry가 생겼을 수 있어 정리는 반드시 시도해야 한다.
   const shouldAttemptCleanup = status === 201 && entryId !== ''
-  // 실 배포 대상 진단 스크립트로 확정(위 findQueueRowByNumber 주석 참고): register() 직후 GET
-  // 응답에 Entry는 항상 즉시 정확히 포함돼 있었다 — 반영이 안 되는 것처럼 보였던 진짜 원인은 앱의
-  // 폴링 타이밍이 아니라 행을 찾는 정규식 자체의 매칭 버그였다. 그 버그를 고쳤으므로
-  // waitForQueueRowViaRefresh의 재시도 횟수도 과도했던 8회에서 최소한의 안전 여유(최대 2회)로
-  // 줄였다 — 여러 세션이 동시에 같은 실 배포를 쓰는 상황의 네트워크 지연/서버 부하 정도만 흡수하면
-  // 충분하다.
+  // waitForQueueRowViaRefresh 정의부 주석 참고 — 등록 직후 GET 응답이 아주 짧게(수백 ms) 새
+  // Entry를 빠뜨릴 수 있는 실측된 서버 측 타이밍 특성이 있어, 재시도 사이에 명시적 대기(500ms)를
+  // 둔다. 관건은 재시도 "횟수"가 아니라 재시도 사이의 실제 경과 시간이다.
   const rowVisible =
     shouldAttemptCleanup && queueNumber !== null ? await waitForQueueRowViaRefresh(page, queueNumber) : false
   const registered = status === 201 && entryId !== '' && rowVisible
