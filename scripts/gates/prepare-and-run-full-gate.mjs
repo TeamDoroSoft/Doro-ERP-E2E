@@ -3,13 +3,14 @@
 // 수행하는 안전한 진입점이다. 기존 run-full-gate.mjs는 환경이 이미 준비된 CI/디버깅용 저수준
 // 진입점으로 유지한다.
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const REPO_ROOT = resolve(HERE, '..')
+const REPO_ROOT = resolve(HERE, '..', '..')
 const BROWSER_DIR = resolve(REPO_ROOT, 'browser')
+const GATE_LOCK_PATH = resolve(REPO_ROOT, 'reports', '.e2e-gate.lock')
 const EXPECTED_AWS_ACCOUNT_ID = '727646470302'
 const DESTRUCTIVE_ENV = {
   destructiveAuth: 'RUN_DESTRUCTIVE_AUTH_TESTS',
@@ -19,9 +20,60 @@ const DESTRUCTIVE_ENV = {
   faultInjection: 'RUN_FAULT_INJECTION_TESTS',
 }
 
+function readLockOwner() {
+  try {
+    const lock = JSON.parse(readFileSync(GATE_LOCK_PATH, 'utf8'))
+    return typeof lock?.pid === 'number' ? lock : null
+  } catch {
+    return null
+  }
+}
+
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return !(error && typeof error === 'object' && error.code === 'ESRCH')
+  }
+}
+
+function acquireGateLock() {
+  mkdirSync(dirname(GATE_LOCK_PATH), { recursive: true })
+  let descriptor
+  try {
+    descriptor = openSync(GATE_LOCK_PATH, 'wx')
+  } catch (error) {
+    const owner = readLockOwner()
+    if (error && typeof error === 'object' && error.code === 'EEXIST' && owner && !isProcessRunning(owner.pid)) {
+      // 비정상 종료로 남은 이전 실행의 락만 회수한다. 소유자를 읽지 못한 락은 생성 중일 수 있으므로
+      // 건드리지 않고 새 실행을 중단해 동시 실행을 우선 차단한다.
+      unlinkSync(GATE_LOCK_PATH)
+      descriptor = openSync(GATE_LOCK_PATH, 'wx')
+    } else if (error && typeof error === 'object' && error.code === 'EEXIST' && owner) {
+      throw new Error(
+        `다른 E2E 게이트가 이미 실행 중입니다 (PID=${owner.pid}, 시작=${owner.startedAt ?? 'unknown'}). ` +
+          '동일 테스트 계정의 Rate Limit 오염을 막기 위해 현재 실행이 끝난 뒤 다시 시도하세요.',
+      )
+    } else {
+      throw new Error('E2E 게이트 실행 락을 획득하지 못했습니다. 잠시 후 다시 시도하세요.')
+    }
+  }
+  writeFileSync(descriptor, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), 'utf8')
+
+  return () => {
+    closeSync(descriptor)
+    try {
+      unlinkSync(GATE_LOCK_PATH)
+    } catch (error) {
+      if (!(error && typeof error === 'object' && error.code === 'ENOENT')) throw error
+    }
+  }
+}
+
 const HELP = [
   '사용법:',
-  '  node scripts/prepare-and-run-full-gate.mjs [옵션]',
+  '  node scripts/gates/prepare-and-run-full-gate.mjs [옵션]',
   '',
   '옵션:',
   '  --aws-profile <name>          지정한 AWS CLI Profile 사용(생략 시 현재 자격증명 체인)',
@@ -179,7 +231,7 @@ function configureDestructiveFlags(options) {
 }
 
 function resolveDeploymentIdentity() {
-  const result = spawnSync(process.execPath, ['scripts/resolve-deployment-identity.mjs'], {
+  const result = spawnSync(process.execPath, ['scripts/gates/resolve-deployment-identity.mjs'], {
     cwd: REPO_ROOT,
     env: process.env,
     stdio: 'inherit',
@@ -268,13 +320,18 @@ export function main(argv = process.argv.slice(2)) {
 
   console.log('')
   console.log('=== full-gate 실행 ===')
-  const result = spawnSync(process.execPath, ['scripts/run-full-gate.mjs'], {
-    cwd: REPO_ROOT,
-    env: process.env,
-    stdio: 'inherit',
-  })
-  if (result.error) throw result.error
-  return result.status ?? 1
+  const releaseGateLock = acquireGateLock()
+  try {
+    const result = spawnSync(process.execPath, ['scripts/gates/run-full-gate.mjs'], {
+      cwd: REPO_ROOT,
+      env: process.env,
+      stdio: 'inherit',
+    })
+    if (result.error) throw result.error
+    return result.status ?? 1
+  } finally {
+    releaseGateLock()
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

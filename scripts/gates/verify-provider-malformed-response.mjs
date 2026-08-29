@@ -257,7 +257,7 @@ async function main() {
 }
 
 function writeResult({ pass, faulted, recovered, restoredOk, noInternalLeak }) {
-  const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'reports')
+  const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'reports')
   const runId = process.env.DORO_RUN_ID || `run-ops-${Date.now()}`
   const record = {
     schemaVersion: 1,

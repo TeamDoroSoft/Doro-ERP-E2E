@@ -207,7 +207,7 @@ node api/lib/build-report.mjs /tmp/queue-connectivity.log QUEUE QUEUE-001,QUEUE-
   `randomUuidV4()`(`Math.random()`만으로 RFC 4122 버전/변형 비트를 채우는 최소 구현)로 매 실행마다
   새로 만든다.
 - 목록 조회 단언이 실패해도 등록된 Entry가 `WAITING`으로 방치되지 않도록, 등록에 성공했다면 취소는
-  `try`/`finally`로 항상 시도한다(`scripts/verify-partial-pod-failure.mjs`의 "항상 정리 시도" 철학과 동일).
+  `try`/`finally`로 항상 시도한다(`scripts/gates/verify-partial-pod-failure.mjs`의 "항상 정리 시도" 철학과 동일).
   재취소는 `QueueErrorCode.STATE_CONFLICT`(`409`)로 거절돼야 한다(`QueueErrorCode.java` 확인 완료).
 
 ## `CATALOG-001`~`006`: `commerce-api` Catalog 연결성 (Tier A)·업무 로직 (Tier B)
@@ -336,13 +336,13 @@ node api/lib/build-report.mjs /tmp/audit-sales-connectivity.log AUDIT-SALES AUDI
 
 ## `OPS-001`/`OPS-003`: 장애 주입 (기본 비활성, 로컬 전용)
 
-`scripts/run-fault-injection.mjs`는 k6가 아니라 별도 Node 스크립트다 — Docker 컨테이너를 직접
+`scripts/local-rehearsal/run-fault-injection.mjs`는 k6가 아니라 별도 Node 스크립트다 — Docker 컨테이너를 직접
 멈췄다 올려야 해서 k6 JS 샌드박스로는 할 수 없는 일이다(Store Access·Redis 컨테이너 이름이
 하드코딩돼 있어 로컬 Docker Prod-like 스택 전용이며 실제 dev/stage/prod에는 쓸 수 없다).
 
 ```bash
-node scripts/run-fault-injection.mjs OPS-001 --confirm   # Store Access 정지 → 503 → 재기동 → 401 복구
-node scripts/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 → 재기동 → 401 복구
+node scripts/local-rehearsal/run-fault-injection.mjs OPS-001 --confirm   # Store Access 정지 → 503 → 재기동 → 401 복구
+node scripts/local-rehearsal/run-fault-injection.mjs OPS-003 --confirm   # Redis 정지 → 503 → 재기동 → 401 복구
 ```
 
 `--confirm` 없이 실행하면 아무 컨테이너도 건드리지 않고 사용법만 출력하고 끝난다(배포 Frontend–Backend
@@ -381,7 +381,7 @@ Catalog 뒤의 기존 5분 대기 후 `audit-sales-connectivity.js`가 1회를 �
 
 **용량 5·분당 1회 보충인데 위 스크립트들을 합치면 한 번에 5를 훌쩍 넘는다 — 대기 없이 이어서
 돌리면 뒤에 실행되는 케이스가 실제 결함이 아닌 `429 AUTH_RATE_LIMITED`로 잘못 실패한다.** 이 문제는
-저장소 루트의 `scripts/run-mandatory-gate.mjs`(오케스트레이터)가 단계 사이에 Bucket이 완전히
+저장소 루트의 `scripts/gates/run-mandatory-gate.mjs`(오케스트레이터)가 단계 사이에 Bucket이 완전히
 다시 찰 만큼(용량 5 ÷ 분당 1 리필 = 5분) 자동으로 대기해서 처리한다. 파괴적 Catalog 플래그가 꺼진
 Mandatory Gate는 `session-flow.js`(3회) → `queue-connectivity.js`(1회) → Catalog Tier A(1회)를
 추가 대기 없이 이어붙여 3+1+1=5로 맞춘다. Full Gate에서 파괴적 Catalog 플래그가 켜지면 위에서
@@ -410,7 +410,7 @@ core k6 API가 없어서, `record()`는 케이스마다 `console.log(JSON.string
 내보내고, `k6 run --log-format=raw`로 그 줄들이 k6 자체 로그 접두어 없이 그대로 찍히게 한다.
 **이 줄은 stdout이 아니라 stderr로 나온다**(k6 v2.2.0 실측 확인) — 위 "실행" 절의 수동 명령이
 `2>&1`로 두 스트림을 합쳐서 파일로 받는 이유가 이것이다. 저장소 루트의 오케스트레이터
-(`scripts/run-mandatory-gate.mjs` 등)는 이 스트림 문제를 피하려고 `--console-output=<파일>`로
+(`scripts/gates/run-mandatory-gate.mjs` 등)는 이 스트림 문제를 피하려고 `--console-output=<파일>`로
 k6가 그 줄들을 직접 파일에 쓰게 한다. 어느 경로든 `api/lib/build-report.mjs`(평범한 Node
 스크립트)가 그 파일을 후처리해서 `reports/<runId>/<suite>.{results.jsonl,summary.json,junit.xml}`을
 만든다 — browser가 쓰는 `reports/<runId>/results.jsonl`과 같은 `reports/<runId>/` 폴더 아래다.
@@ -423,7 +423,7 @@ k6 코어 JS 자체에는 mkdir API가 없어서, 없는 하위 디렉터리를 
 안전하다.
 
 browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 보려면 저장소 루트의
-`scripts/build-combined-summary.mjs <runId>`를 쓴다 — browser/api 실행에 같은 `DORO_RUN_ID`를
+`scripts/reporting/build-combined-summary.mjs <runId>`를 쓴다 — browser/api 실행에 같은 `DORO_RUN_ID`를
 지정해야 서로 짝지어진다. 이 스크립트는 `combined-summary.json`과 함께 `reports/<runId>/report.md`도
 만든다 — 모든 케이스를 `testCaseId` 오름차순으로 정리한 사람이 읽기 좋은 Markdown 표로, 정본은
 여전히 `combined-summary.json`/각 스위트의 `results.jsonl`이다.
@@ -443,7 +443,7 @@ browser(Playwright) 결과와 합쳐 하나의 판정(`frontBackConnected`)을 �
   관찰돼 별도 구현 없이 문서화만 했다(`api/scenarios/auth-lockout-ratelimit.js`의 "실측 결과" 주석
   참고 — 계정 Bucket 리필과 잠금 만료 시점이 겹쳐서 `200`이 나오는 것을 확인한 부분. README.md
   "미구현 항목 설명"과 같은 분류).
-- `OPS-002`/`004`/`005`는 "미구현"이 아니다 — 코드는 이미 완성돼 있고(`scripts/verify-provider-malformed-response.mjs`/`verify-edge-boundary.mjs`/`verify-partial-pod-failure.mjs`),
+- `OPS-002`/`004`/`005`는 "미구현"이 아니다 — 코드는 이미 완성돼 있고(`scripts/gates/verify-provider-malformed-response.mjs`/`verify-edge-boundary.mjs`/`verify-partial-pod-failure.mjs`),
   `OPS-004`만 2026-08-25에 실 AWS 배포로 PASS까지 확인했다. `OPS-002`/`005`는 이 작업 환경에 EKS
   접근 권한이 없어 **실행 검증**만 못 한 상태다(README.md "주의사항"의 EKS 접근 미검증 경고 참고).
 - `SALES-001`은 KST 자정 전후 5분 이내에 실행되면 `SKIP_PRECONDITION`이 된다(위 "`AUDIT-001`,
