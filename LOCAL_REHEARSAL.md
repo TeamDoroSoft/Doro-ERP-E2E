@@ -14,7 +14,7 @@ Docker Compose로 6개 Spring Boot 서비스를 `prod` Profile + 자체 서명 T
 
 이건 실제 dev 배포(`doro.minseok.click`, CloudFront→ALB→EKS 실 인프라)를 대상으로 돌리는 것과 **다른 모드**다 —
 후자는 `DORO_FRONTEND_ORIGIN`/`DORO_API_ORIGIN`을 `https://doro.minseok.click`으로 주고, AWS 자격증명으로
-`scripts/resolve-deployment-identity.mjs`를 먼저 돌려 Revision 정보를 채운 뒤 실행한다(`README.md` "준비" 절 참고).
+`scripts/gates/resolve-deployment-identity.mjs`를 먼저 돌려 Revision 정보를 채운 뒤 실행한다(`README.md` "준비" 절 참고).
 
 **정적 계정 8개가 필요한 케이스(`AUTH-013`/`014`/`015`, `AUTH-030`/`031`, `FE-BE-010`/`014`, `SESS-004`/`005`)는
 로컬 리허설로 검증할 수 없다.** 이 리포는 애초에 실 AWS 배포 검증이 본래 목적이고 로컬 리허설은 스크립트
@@ -62,7 +62,7 @@ VITE_EDGE_PROXY_TARGET=https://localhost:8080 npm run dev
 git checkout -- vite.config.ts
 ```
 
-## 계정 준비: `scripts/provision-local-rehearsal-account.mjs`
+## 계정 준비: `scripts/local-rehearsal/provision-local-rehearsal-account.mjs`
 
 `Doro-ERP-Service`의 Flyway 마이그레이션에는 Seed 데이터가 없다(스키마만 생성) — `sample-store`/`owner`는
 실제 dev 배포에만 존재하는 계정이고, 방금 띄운 로컬 Postgres에는 테넌트·매장·직원이 하나도 없다. 이 스크립트가
@@ -76,7 +76,7 @@ git checkout -- vite.config.ts
 cd doro-erp-e2e
 STORE_ACCESS_PROVISIONING_USERNAME=$(grep -m1 '^STORE_ACCESS_PROVISIONING_USERNAME=' ../Doro-ERP-Service/.env | cut -d= -f2-) \
 STORE_ACCESS_PROVISIONING_PASSWORD=$(grep -m1 '^STORE_ACCESS_PROVISIONING_PASSWORD=' ../Doro-ERP-Service/.env | cut -d= -f2-) \
-node scripts/provision-local-rehearsal-account.mjs
+node scripts/local-rehearsal/provision-local-rehearsal-account.mjs
 ```
 
 성공하면 `tenantCode`/`loginId`와 **비밀번호가 아닌** 저장 위치만 터미널에 출력하고, 실제 값은
@@ -122,7 +122,7 @@ DORO_API_ORIGIN=https://localhost:8080 \
 node api/lib/build-report.mjs /tmp/k6-session-flow.log SESS SESS-001,SESS-002,SESS-003,SESS-006,SESS-007,SESS-004,SESS-005
 
 # 세 결과를 하나로 묶는다
-node scripts/build-combined-summary.mjs "$DORO_RUN_ID"
+node scripts/reporting/build-combined-summary.mjs "$DORO_RUN_ID"
 ```
 
 위 8개 정적 계정 없이 이 순서대로 돌리면 `AUTH-013`/`014`/`015`, `SESS-004`/`005`는 `SKIP_PRECONDITION`으로
@@ -150,8 +150,8 @@ DORO_AUTH_VALID_01_TENANT_CODE=unused DORO_AUTH_VALID_01_LOGIN_ID=unused DORO_AU
 node api/lib/build-report.mjs /tmp/k6-auth-ip-diagnostic.log AUTH-ip-diagnostic AUTH-034
 
 # OPS-001/003 — Store Access·Redis 컨테이너를 실제로 멈췄다 올린다 (--confirm 없이는 아무것도 안 함)
-node scripts/run-fault-injection.mjs OPS-001 --confirm
-node scripts/run-fault-injection.mjs OPS-003 --confirm
+node scripts/local-rehearsal/run-fault-injection.mjs OPS-001 --confirm
+node scripts/local-rehearsal/run-fault-injection.mjs OPS-003 --confirm
 ```
 
 `AUTH_VALID_01` 값은 이 스크립트가 실제로 쓰지는 않지만 `loadDeployEnv()`가 공통으로 요구해서 더미 값을

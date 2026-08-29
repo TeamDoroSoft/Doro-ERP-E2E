@@ -296,7 +296,7 @@ export default function () {
 
     // 이 계정은 매 실행마다 실제로 비밀번호를 바꾸므로 "지금 현재 비밀번호가 A인지 B인지"를
     // 스스로 판별해야 한다 — A로 먼저 로그인 시도, 실패하면 B로 시도한다
-    // (scripts/provision-local-rehearsal-account.mjs가 쓰는 "먼저 시도해서 현재 상태를 알아내는"
+    // (scripts/local-rehearsal/provision-local-rehearsal-account.mjs가 쓰는 "먼저 시도해서 현재 상태를 알아내는"
     // 패턴과 동일). 성공한 쪽이 현재 비밀번호이고, 반대쪽으로 바꾼다.
     const jar = freshJar()
     let currentPassword = rotateAccount.passwordA

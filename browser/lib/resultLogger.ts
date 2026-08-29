@@ -27,13 +27,19 @@ export interface CaseObserved {
   requestMethod?: string
   requestPath?: string
   httpStatus?: number
+  loginStatus?: number
   finalPath?: string
   protectedApiPath?: string
   protectedApiStatus?: number
+  protectedApiRequestSent?: boolean
 }
 
 export interface BrowserObservation {
   consoleErrorCount: number
+  // 오류 원문은 민감정보를 제거한 뒤, 원인 추적이 필요한 케이스에만 선택적으로 기록한다.
+  consoleErrors?: string[]
+  // 같은 Origin의 4xx/5xx 경로만 기록한다. Query·Host·응답 Body는 기록하지 않는다.
+  httpErrorPaths?: string[]
   pageErrorCount: number
   failedRequiredRequestCount: number
 }

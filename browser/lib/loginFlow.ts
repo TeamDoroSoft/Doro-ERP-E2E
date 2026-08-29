@@ -27,6 +27,9 @@ export async function loginAsAuthValid01(page: Page, env: DeployEnv): Promise<Lo
   ])
 
   if (loginResponse.status() !== 200) {
+    // Playwright 실패 아티팩트의 DOM 스냅샷에 입력 비밀번호가 남지 않도록, 예외를 던지기 전에
+    // 민감 입력만 비운다. tenantCode/loginId는 결과 레코드에 기록하지 않는다.
+    await page.locator('input[name="password"]').fill('').catch(() => {})
     throw new Error(`사전 로그인 실패 (status=${loginResponse.status()}) — 이 케이스는 로그인 성공을 전제한다`)
   }
 

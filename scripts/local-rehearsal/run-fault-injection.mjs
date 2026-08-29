@@ -30,7 +30,7 @@ const CONFIGS = {
 const opsId = process.argv[2]
 const config = CONFIGS[opsId]
 if (!config) {
-  console.error(`사용법: node scripts/run-fault-injection.mjs <${Object.keys(CONFIGS).join('|')}> --confirm`)
+  console.error(`사용법: node scripts/local-rehearsal/run-fault-injection.mjs <${Object.keys(CONFIGS).join('|')}> --confirm`)
   process.exit(2)
 }
 if (!process.argv.includes('--confirm')) {
@@ -164,7 +164,7 @@ async function main() {
 }
 
 function writeResult({ pass, faulted, recovered, healthRecovered, noInternalLeak }) {
-  const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'reports')
+  const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'reports')
   const runId = process.env.DORO_RUN_ID || `run-ops-${Date.now()}`
   const record = {
     schemaVersion: 1,

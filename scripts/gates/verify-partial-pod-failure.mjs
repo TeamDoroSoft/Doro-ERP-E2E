@@ -322,7 +322,7 @@ function writeResult({
   pass,
   postDeleteError,
 }) {
-  const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'reports')
+  const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'reports')
   const runId = process.env.DORO_RUN_ID || `run-ops-${Date.now()}`
   const record = {
     schemaVersion: 1,

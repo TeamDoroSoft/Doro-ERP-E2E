@@ -342,7 +342,7 @@ function kubectlReachable(): boolean {
 
 // HPA 삭제 전에 저장해둔 .spec으로 HPA를 다시 만든다 — metadata/status는 서버가 다시
 // 채워주므로 이름/namespace만 함께 넣어준다. kubectl apply -f - 는 YAML뿐 아니라 JSON도
-// 그대로 받아들인다(scripts/verify-provider-malformed-response.mjs의 applyDecoyPod()와
+// 그대로 받아들인다(scripts/gates/verify-provider-malformed-response.mjs의 applyDecoyPod()와
 // 동일하게 execFileSync에 input으로 Manifest 문자열을 흘려보내는 방식).
 function restoreHpa(spec: unknown): void {
   const manifest = JSON.stringify({
@@ -1595,14 +1595,20 @@ const DESTRUCTIVE_CATALOG_FLAG = 'RUN_DESTRUCTIVE_CATALOG_TESTS'
 interface CreateCategoryUiResult {
   status: number
   categoryId: string
+  requestSent: boolean
+  responseReceived: boolean
   transportError: string | null
 }
 
 // CatalogManagementView.vue/useCatalogManagement.ts를 그대로 따른다 — "분류 등록" 버튼(canManage일
-// 때만 노출)을 누르면 #category-editor 패널이 열리고, 분류명(#category-name)·표시 순서
+// 때만 노출)을 누르면 분류 편집 dialog가 열리고, 분류명(#category-name)·표시 순서
 // (#category-order)를 채운 뒤 그 패널 안의 "저장" 버튼을 누르면 saveCategory()가
 // POST /api/v1/catalog/categories를 호출한다. 성공하면 목록을 다시 불러오고 editor를 자동으로
 // 닫는다 — Route 이동이 없으므로 waitForURL은 쓰지 않는다.
+function categoryEditorDialog(page: Page) {
+  return page.getByRole('dialog', { name: /메뉴 분류 (등록|수정)/ })
+}
+
 async function createCategoryViaUi(page: Page, name: string): Promise<CreateCategoryUiResult> {
   await page.getByRole('button', { name: '분류 등록' }).click()
   await page.locator('#category-name').fill(name)
@@ -1610,15 +1616,32 @@ async function createCategoryViaUi(page: Page, name: string): Promise<CreateCate
 
   let response: Response | null = null
   let transportError: string | null = null
+  let requestSent = false
+  const isCreateCategoryRequest = (request: Request) =>
+    request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/catalog/categories'
+  const trackCreateCategoryRequest = (request: Request) => {
+    if (isCreateCategoryRequest(request)) requestSent = true
+  }
+
+  page.on('request', trackCreateCategoryRequest)
+  let responseResult: PromiseSettledResult<Response>
+  let clickResult: PromiseSettledResult<void>
   try {
-    ;[response] = await Promise.all([
-      page.waitForResponse(
-        (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/catalog/categories',
-      ),
-      page.locator('#category-editor').getByRole('button', { name: '저장' }).click(),
+    ;[responseResult, clickResult] = await Promise.allSettled([
+      page.waitForResponse((res) => isCreateCategoryRequest(res.request())),
+      categoryEditorDialog(page).getByRole('button', { name: '저장' }).click(),
     ])
-  } catch (error) {
-    transportError = error instanceof Error ? error.message : String(error)
+  } finally {
+    page.off('request', trackCreateCategoryRequest)
+  }
+
+  if (responseResult.status === 'fulfilled') response = responseResult.value
+  if (responseResult.status === 'rejected') {
+    // POST가 관측됐는지로 UI 검증/클릭 실패와 서버 응답 미수신을 나눈다. 원문 예외에는 URL·입력값이
+    // 섞일 수 있으므로 결과에는 남기지 않는다.
+    transportError = requestSent ? 'CATEGORY_RESPONSE_NOT_RECEIVED' : 'CATEGORY_REQUEST_NOT_SENT'
+  } else if (clickResult.status === 'rejected') {
+    transportError = 'CATEGORY_SAVE_CLICK_FAILED'
   }
 
   const status = response?.status() ?? 0
@@ -1627,7 +1650,7 @@ async function createCategoryViaUi(page: Page, name: string): Promise<CreateCate
     const body = await response!.json().catch(() => null)
     categoryId = typeof body?.categoryId === 'string' ? body.categoryId : ''
   }
-  return { status, categoryId, transportError }
+  return { status, categoryId, requestSent, responseReceived: response !== null, transportError }
 }
 
 interface CreateProductUiResult {
@@ -1637,12 +1660,16 @@ interface CreateProductUiResult {
 }
 
 // "상품 등록" 버튼은 canManage && selectedCategoryId일 때만 노출된다 — 호출부가 새로 만든 분류를
-// 미리 선택해둔 뒤(.category-select 클릭) 이 함수를 부른다. #product-editor 패널의 메뉴 분류
+// 미리 선택해둔 뒤(.category-select 클릭) 이 함수를 부른다. 상품 편집 dialog의 메뉴 분류
 // select에서 방금 만든 분류를 명시적으로 고르고, 상품명·가격을 채운 뒤 "저장"을 누르면
 // saveProduct()가 POST /api/v1/catalog/products를 호출한다.
+function productEditorDialog(page: Page) {
+  return page.getByRole('dialog', { name: /상품 (등록|수정)/ })
+}
+
 async function createProductViaUi(page: Page, categoryName: string, name: string): Promise<CreateProductUiResult> {
   await page.getByRole('button', { name: '상품 등록' }).click()
-  await page.locator('#product-editor select').selectOption({ label: categoryName })
+  await productEditorDialog(page).locator('select').selectOption({ label: categoryName })
   await page.getByLabel('상품명').fill(name)
   await page.getByLabel('가격').fill('1000')
 
@@ -1653,7 +1680,7 @@ async function createProductViaUi(page: Page, categoryName: string, name: string
       page.waitForResponse(
         (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/catalog/products',
       ),
-      page.locator('#product-editor').getByRole('button', { name: '저장' }).click(),
+      productEditorDialog(page).getByRole('button', { name: '저장' }).click(),
     ])
   } catch (error) {
     transportError = error instanceof Error ? error.message : String(error)
@@ -1693,7 +1720,7 @@ async function updateCategoryViaUi(
           res.request().method() === 'PATCH' &&
           new URL(res.url()).pathname === `/api/v1/catalog/categories/${categoryId}`,
       ),
-      page.locator('#category-editor').getByRole('button', { name: '저장' }).click(),
+      categoryEditorDialog(page).getByRole('button', { name: '저장' }).click(),
     ])
   } catch (error) {
     transportError = error instanceof Error ? error.message : String(error)
@@ -1733,7 +1760,7 @@ async function updateProductViaUi(
           res.request().method() === 'PATCH' &&
           new URL(res.url()).pathname === `/api/v1/catalog/products/${productId}`,
       ),
-      page.locator('#product-editor').getByRole('button', { name: '저장' }).click(),
+      productEditorDialog(page).getByRole('button', { name: '저장' }).click(),
     ])
   } catch (error) {
     transportError = error instanceof Error ? error.message : String(error)
@@ -2056,6 +2083,8 @@ test('FE-BE-025 화면에서 분류·상품 등록/수정 → 품절 왕복 → 
     observed: { requestPath: '/api/v1/catalog/categories', httpStatus: categoryResult.status },
     assertions: {
       categoryCreated,
+      categoryCreateRequestSent: categoryResult.requestSent,
+      categoryCreateResponseReceived: categoryResult.responseReceived,
       categoryListed,
       productCreated,
       productListed,
@@ -2070,7 +2099,11 @@ test('FE-BE-025 화면에서 분류·상품 등록/수정 → 품절 왕복 → 
     errorClass: pass
       ? null
       : transportError
-        ? 'UI_API_REQUEST_NOT_SENT'
+        ? transportError === 'CATEGORY_RESPONSE_NOT_RECEIVED'
+          ? 'UI_API_RESPONSE_NOT_RECEIVED'
+          : transportError === 'CATEGORY_REQUEST_NOT_SENT' || transportError === 'CATEGORY_SAVE_CLICK_FAILED'
+            ? 'UI_API_REQUEST_NOT_SENT'
+            : 'UI_CATALOG_CREATE_UPDATE_SOLD_OUT_OR_DEACTIVATE_FAILED'
         : 'UI_CATALOG_CREATE_UPDATE_SOLD_OUT_OR_DEACTIVATE_FAILED',
   })
 

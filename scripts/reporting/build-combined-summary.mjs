@@ -2,16 +2,16 @@
 // browser(Playwright)와 api(k6) 결과를 같은 runId 기준으로 묶어 하나의 판정을 만든다. 두 러너에
 // 같은 DORO_RUN_ID를 지정해서 실행해야 서로 짝지어진다 — README "실행" 절 참고.
 //
-// 사용법: node scripts/build-combined-summary.mjs <runId>
+// 사용법: node scripts/reporting/build-combined-summary.mjs <runId>
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'reports')
+const reportsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'reports')
 
 const [, , runId] = process.argv
 if (!runId) {
-  console.error('사용법: node scripts/build-combined-summary.mjs <runId>')
+  console.error('사용법: node scripts/reporting/build-combined-summary.mjs <runId>')
   console.error('browser와 api 양쪽 실행에 같은 DORO_RUN_ID를 지정해야 서로 짝지어진다.')
   process.exit(2)
 }

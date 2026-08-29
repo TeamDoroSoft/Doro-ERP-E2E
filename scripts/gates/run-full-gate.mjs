@@ -1,19 +1,7 @@
 #!/usr/bin/env node
-// 전체 게이트 — 필수 게이트(run-mandatory-gate.mjs) 전부 + 조건부/파괴적 시나리오
-// (배포 Frontend–Backend 종단 검증.md §4 조건부 Browser, §5의 AUTH-030/031/033·OPS-002, §6의
-// OPS-005, §10의 QUEUE-003·CATALOG-004~006)까지 한 번에 실행한다.
-// AUTH-034는 프록시 환경 의존 진단으로 재분류되어 이 게이트에 포함하지 않는다.
-//
-// 파괴적 플래그(RUN_DESTRUCTIVE_AUTH_TESTS, RUN_FAULT_INJECTION_TESTS)는 이 스크립트가 절대
-// 대신 켜주지 않는다 — 실행하는 사람이 이 명령을 돌리기 "전에" 직접 export해야만 해당
-// 케이스가 실제로 실행된다. 안 켜져 있으면 관련 단계를 건너뛰고 무엇을 export해야 켜지는지
-// 안내만 출력한다. FE-BE-012·AUTH-030/031/033은 각 파일 안의 기존 안전장치가 그대로
-// 처리한다(설정 안 돼 있으면 파일 자체가 SKIP_PRECONDITION으로 기록) — AUTH-030/031은 이
-// 플래그와 별개로 AUTH_LOCKOUT_01 정적 계정이 없어도 같은 방식으로 SKIP된다. OPS-001/002/003/005는
-// 개별 스크립트가 `--confirm` CLI 인자를 직접 요구하는 구조라 이 오케스트레이터가 대신
-// 판단해야 하는데, 새 플래그를 따로 만들지 않고 FE-BE-012와 같은 위험 범주(실제로 무언가를
-// 멈추거나 지우거나 바꾼다)이므로 RUN_FAULT_INJECTION_TESTS 하나를 그대로 재사용한다 — 켜져
-// 있을 때만 `--confirm`을 붙여서 호출하고, 아니면 아예 호출하지 않고 SKIP으로 기록한다.
+// 레거시 내부 실행기 — 필수 게이트(run-mandatory-gate.mjs) 전부와 도메인 상태변경
+// 시나리오를 실행한다. 인프라 장애 주입(FE-BE-012, OPS-001~003, OPS-005)은
+// run-infrastructure-fault-injection.mjs로 분리되어 이 파일에서는 실행하지 않는다.
 //
 // AUTH-015 → AUTH-030 순서 의존성: runMandatoryGate()가 먼저 실행하는
 // api/scenarios/auth-scenarios(-account-nonexposure).js의 AUTH-015는 RUN_DESTRUCTIVE_AUTH_TESTS=true일 때
@@ -53,10 +41,47 @@
 // Playwright 조건부 시나리오 단계 안에서 함께 돈다.
 import { pathToFileURL } from 'node:url'
 import { runMandatoryGate } from './run-mandatory-gate.mjs'
-import { runStep, guardFlag, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
+import {
+  ensureRunId,
+  runStep,
+  guardFlag,
+  runPlaywrightSpec,
+  runK6Scenario,
+  runNodeScript,
+  printFinalSummary,
+  waitForRateLimitRecovery,
+} from '../lib/gate-steps.mjs'
+
+const ACCOUNT_BUCKET_REFILL_MS = 60_000
+const ACCOUNT_BUCKET_SAFETY_MARGIN_MS = 30_000
+
+async function waitForSharedAccountBudget(label, currentTokens, requiredTokens, nextStepName) {
+  const missingTokens = Math.max(0, requiredTokens - currentTokens)
+  if (missingTokens === 0) return
+
+  const waitMs = missingTokens * ACCOUNT_BUCKET_REFILL_MS + ACCOUNT_BUCKET_SAFETY_MARGIN_MS
+  await waitForRateLimitRecovery({
+    label: `${label}: 공유 AUTH_VALID_01/AUTH_ROLE_OWNER_01 버킷 ${missingTokens}개 토큰 회복 필요`,
+    waitMs,
+    nextStep: nextStepName,
+  })
+}
+
+function conditionalGroupSharedLoginBudget() {
+  const orderEnabled = process.env.RUN_DESTRUCTIVE_ORDER_TESTS === 'true'
+  const queueEnabled = process.env.RUN_DESTRUCTIVE_QUEUE_TESTS === 'true'
+  const catalogEnabled = process.env.RUN_DESTRUCTIVE_CATALOG_TESTS === 'true'
+  return {
+    // FE-BE-014(OWNER) 1회 + FE-BE-015 안전/비안전 redirect 2회 + 주문 020/021 각 1회.
+    groupA: 3 + (orderEnabled ? 2 : 0),
+    // FE-BE-023 1회 + FE-BE-024 1회 + FE-BE-025(OWNER) 1회.
+    groupB: (queueEnabled ? 1 : 0) + (orderEnabled ? 1 : 0) + (catalogEnabled ? 1 : 0),
+  }
+}
 
 export async function runFullGate() {
-  const steps = await runMandatoryGate()
+  const runId = ensureRunId()
+  const steps = await runMandatoryGate({ includeSummary: false })
 
   steps.push(
     await runStep('QUEUE-003 (k6 queue-connectivity, RUN_DESTRUCTIVE_QUEUE_TESTS 필요)', () => {
@@ -98,8 +123,20 @@ export async function runFullGate() {
     }),
   )
 
+  const conditionalBudget = conditionalGroupSharedLoginBudget()
+  // runMandatoryGate 마지막 AUDIT-SALES 단계가 공유 계정 로그인 1회를 사용하므로, 직전의 5분
+  // 회복 직후에도 추정 잔량은 4개다. 외부 동시 실행은 사용자용 진입점의 실행 락으로 차단한다.
+  let sharedAccountTokens = 4
+  await waitForSharedAccountBudget(
+    '조건부 그룹 A 시작 전',
+    sharedAccountTokens,
+    conditionalBudget.groupA,
+    'FE-BE-010~015,020,021',
+  )
+  sharedAccountTokens = Math.max(sharedAccountTokens, conditionalBudget.groupA) - conditionalBudget.groupA
+
   steps.push(
-    await runStep('FE-BE-010~015,020,021,023~027 (Playwright 조건부 시나리오)', () => {
+    await runStep('FE-BE-010~015,020,021 (Playwright 조건부 그룹 A)', () => {
       guardFlag(
         'RUN_FAULT_INJECTION_TESTS',
         'FE-BE-012(Provider 장애 주입)',
@@ -114,34 +151,42 @@ export async function runFullGate() {
         'FE-BE-020/021/024(주문 생성·결제 시작·PENDING 복구)',
         'RUN_DESTRUCTIVE_ORDER_TESTS=true를 export한 뒤 다시 실행하세요.',
       )
-      // FE-BE-023(대기열 접수 화면)도 같은 파일 안에 있다 — 위 QUEUE-003과 정확히 같은 이유로
-      // (등록·취소해도 queueNumber 소비와 CANCELLED 행이 실 테넌트에 영구히 남음) 이 플래그
-      // 없이는 SKIP_PRECONDITION으로 끝난다. QUEUE-003(k6)과 FE-BE-023(Playwright)은 각자
-      // 독립적으로 이 플래그를 읽고 각자 별도의 Entry를 등록·취소한다 — 서로 중복 호출하지 않는다.
+      return runPlaywrightSpec('tests/fe-be-conditional.spec.ts', [
+        '--grep',
+        'FE-BE-(010|011|012|013|014|015|020|021)',
+      ])
+    }),
+  )
+
+  await waitForSharedAccountBudget(
+    '조건부 그룹 B 시작 전',
+    sharedAccountTokens,
+    conditionalBudget.groupB,
+    'FE-BE-023~027 (FE-BE-025 포함)',
+  )
+
+  steps.push(
+    await runStep('FE-BE-023~027 (Playwright 조건부 그룹 B)', () => {
       guardFlag(
         'RUN_DESTRUCTIVE_QUEUE_TESTS',
         'FE-BE-023(대기열 접수 화면)',
         'RUN_DESTRUCTIVE_QUEUE_TESTS=true를 export한 뒤 다시 실행하세요.',
       )
-      // FE-BE-025(카탈로그 등록/수정 화면)도 같은 파일 안에 있다 — 위 CATALOG-004~006과 정확히
-      // 같은 이유로(DELETE Endpoint가 없어 생성한 Category·Product가 영구히 남음) 이 플래그
-      // 없이는 SKIP_PRECONDITION으로 끝난다. CATALOG-004~006(k6)과 FE-BE-025(Playwright)는 각자
-      // 독립적으로 이 플래그를 읽고 각자 별도 이름의 Category·Product를 생성한다.
       guardFlag(
         'RUN_DESTRUCTIVE_CATALOG_TESTS',
         'FE-BE-025(카탈로그 등록/수정 화면)',
         'RUN_DESTRUCTIVE_CATALOG_TESTS=true를 export한 뒤 다시 실행하세요.',
       )
-      return runPlaywrightSpec('tests/fe-be-conditional.spec.ts')
+      return runPlaywrightSpec('tests/fe-be-conditional.spec.ts', ['--grep', 'FE-BE-(023|024|025|026|027)'])
     }),
   )
 
   if (process.env.RUN_DESTRUCTIVE_AUTH_TESTS === 'true') {
-    console.log(
-      '  ⏳ AUTH-015(방금 실행됨)가 AUTH_LOCKOUT_01의 Rate Limit Bucket을 소진시켰을 수 있습니다 — ' +
-        'AUTH-030의 5회 연속 401 판정이 429로 오염되지 않도록 65초 대기합니다.',
-    )
-    await new Promise((r) => setTimeout(r, 65_000))
+    await waitForRateLimitRecovery({
+      label: 'AUTH-015 이후 AUTH_LOCKOUT_01 버킷',
+      waitMs: 65_000,
+      nextStep: 'AUTH-030,031,033',
+    })
   }
 
   steps.push(
@@ -157,77 +202,10 @@ export async function runFullGate() {
     }),
   )
 
-  const isLocalRehearsal = (process.env.DORO_ENVIRONMENT ?? '').startsWith('local')
-
-  for (const opsId of ['OPS-001', 'OPS-003']) {
-    steps.push(
-      await runStep(`${opsId} (로컬 Docker 장애 주입)`, () => {
-        if (!isLocalRehearsal) {
-          console.log(`  ⚠ DORO_ENVIRONMENT가 로컬 리허설 대상이 아닙니다 — ${opsId}를 이번 실행에서 SKIP합니다.`)
-          console.log(
-            '    scripts/run-fault-injection.mjs는 로컬 Docker 주소와 컨테이너 이름에 하드코딩되어 실제 배포를 대상으로 실행할 수 없습니다. ' +
-              '잘못된 대상을 검증하지 않도록 이 단계를 건너뜁니다.',
-          )
-          return { ok: true, skipped: true }
-        }
-        if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
-          guardFlag(
-            'RUN_FAULT_INJECTION_TESTS',
-            `${opsId}(실제로 컨테이너를 멈췄다 올림)`,
-            `RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 — 이 스크립트는 그 값이 있을 때만 --confirm을 붙여서 호출됩니다.`,
-          )
-          return { ok: true, skipped: true }
-        }
-        return runNodeScript('scripts/run-fault-injection.mjs', [opsId, '--confirm'])
-      }),
-    )
-  }
-
   steps.push(
-    await runStep('OPS-002 (실 배포 EKS Provider 미승인 응답, 미검증)', () => {
-      if (isLocalRehearsal) {
-        console.log('  ⚠ DORO_ENVIRONMENT가 로컬 리허설 대상입니다 — OPS-002를 이번 실행에서 SKIP합니다.')
-        console.log(
-          '    scripts/verify-provider-malformed-response.mjs는 kubectl로 실 EKS의 store-access-api Service를 ' +
-            '건드리는 실 배포 전용 스크립트라 로컬 리허설 대상에는 실행할 이유가 없습니다.',
-        )
-        return { ok: true, skipped: true }
-      }
-      if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
-        guardFlag(
-          'RUN_FAULT_INJECTION_TESTS',
-          'OPS-002(실제로 store-access-api Service selector를 디코이로 임시 교체)',
-          'RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 — 이 스크립트는 그 값이 있을 때만 --confirm을 붙여서 호출됩니다. ' +
-            '단, 이 세션 기준 EKS Access Entry가 없어 이 단계는 켜도 실패할 가능성이 높습니다(project_eks_access_terraform_role 메모 참고). ' +
-            '켜져 있는 동안 store-access-api를 쓰는 edge-api의 모든 통신이 함께 영향받는다는 점도 스크립트 상단 주석 참고.',
-        )
-        return { ok: true, skipped: true }
-      }
-      return runNodeScript('scripts/verify-provider-malformed-response.mjs', ['--confirm'])
-    }),
-  )
-
-  steps.push(
-    await runStep('OPS-005 (실 배포 EKS 일부 Pod 비정상, 미검증)', () => {
-      if (isLocalRehearsal) {
-        console.log('  ⚠ DORO_ENVIRONMENT가 로컬 리허설 대상입니다 — OPS-005를 이번 실행에서 SKIP합니다.')
-        console.log(
-          '    scripts/verify-partial-pod-failure.mjs는 kubectl로 실 EKS의 store-access-api Pod를 ' +
-            'delete하는 실 배포 전용 스크립트라 로컬 리허설 대상에는 실행할 이유가 없습니다.',
-        )
-        return { ok: true, skipped: true }
-      }
-      if (process.env.RUN_FAULT_INJECTION_TESTS !== 'true') {
-        guardFlag(
-          'RUN_FAULT_INJECTION_TESTS',
-          'OPS-005(실제로 store-access-api Pod 1개를 delete)',
-          'RUN_FAULT_INJECTION_TESTS=true를 export한 뒤 다시 실행하세요 — 이 스크립트는 그 값이 있을 때만 --confirm을 붙여서 호출됩니다. ' +
-            '단, 이 세션 기준 EKS Access Entry가 없어 이 단계는 켜도 실패할 가능성이 높습니다(project_eks_access_terraform_role 메모 참고).',
-        )
-        return { ok: true, skipped: true }
-      }
-      return runNodeScript('scripts/verify-partial-pod-failure.mjs', ['--confirm'])
-    }),
+    await runStep('종합 판정 (build-combined-summary)', () =>
+      runNodeScript('scripts/reporting/build-combined-summary.mjs', [runId]),
+    ),
   )
 
   return steps

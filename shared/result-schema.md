@@ -18,10 +18,10 @@
 | `environment` / `targetHost` | string | |
 | `deployment` | object | `frontendRevision`, `cloudFrontDistributionId`, `edgeRevision`, `storeAccessRevision` — 미주입 시 `"unknown"` |
 | `accountAlias` | string \| null | `AUTH_VALID_01` 등, 원문 tenantCode/loginId 아님 |
-| `expected` / `observed` | object | 케이스별로 관련 필드만 채움 |
+| `expected` / `observed` | object | 케이스별로 관련 필드만 채움. 예: FE-BE-003은 `loginStatus`·`protectedApiRequestSent`·`protectedApiStatus`를 기록해 로그인 실패·요청 미전송·응답 미수신을 구분한다. |
 | `requestId` | string \| null | 응답 `X-Request-Id` |
 | `assertions` | object | boolean 위주, 케이스별 세부 판정 |
-| `browser` | object | browser 전용: `consoleErrorCount`/`pageErrorCount`/`failedRequiredRequestCount` |
+| `browser` | object | browser 전용: `consoleErrorCount`/`pageErrorCount`/`failedRequiredRequestCount`. 원인 추적 케이스만 민감정보를 제거한 `consoleErrors`, 동일 Origin의 상태·경로만 담은 `httpErrorPaths` 배열을 선택적으로 기록 가능 |
 | `artifacts.failureScreenshot` | string \| null | 아직 미구현 — 항상 `null` |
 | `errorClass` | string \| null | 아래 errorCode 표 또는 `ASSERTION_MISMATCH` |
 
@@ -48,7 +48,7 @@ Password, Cookie/Session/CSRF Token 원문, tenantCode/loginId 원문(항상 `ac
   쓰기 실패만 하고(이것도 로컬 리허설에서 실제 재현·확인), Node 쪽(`build-report.mjs`)은 `fs`가
   있어 문제없다.
 - 러너별 `summary.json`의 최상위 필드명이 다르다 — browser는 `mandatoryBrowserPassed`, api는
-  `mandatoryApiPassed`. `scripts/build-combined-summary.mjs <runId>`(browser/api가 같은 `DORO_RUN_ID`로
+  `mandatoryApiPassed`. `scripts/reporting/build-combined-summary.mjs <runId>`(browser/api가 같은 `DORO_RUN_ID`로
   실행됐다는 전제)가 둘을 읽어 `reports/<runId>.combined-summary.json`에 `frontBackConnected`를
   계산해 넣지만, 이건 배포 Frontend–Backend 종단 검증.md §7 전체 판정식(`deploymentIdentityComplete`·
   `protectedApiReachedFromBrowser`·`requestCorrelationVerified`·`browserErrorsAbsent`까지 포함)이

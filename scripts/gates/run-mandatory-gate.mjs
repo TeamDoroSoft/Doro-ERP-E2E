@@ -12,7 +12,15 @@
 // 필수 값(DORO_FRONTEND_ORIGIN, DORO_API_ORIGIN, DORO_AUTH_VALID_01_*)은 이 스크립트가 아니라
 // 각 하위 실행이 loadDeployEnv()로 직접 요구한다 — 미리 export해두고 실행할 것(README 참고).
 import { pathToFileURL } from 'node:url'
-import { ensureRunId, runStep, runPlaywrightSpec, runK6Scenario, runNodeScript, printFinalSummary } from './lib/gate-steps.mjs'
+import {
+  ensureRunId,
+  runStep,
+  runPlaywrightSpec,
+  runK6Scenario,
+  runNodeScript,
+  printFinalSummary,
+  waitForRateLimitRecovery,
+} from '../lib/gate-steps.mjs'
 
 // AUTH_VALID_01 Rate Limit Bucket(용량 5, 분당 1 리필) 순서 문제: Playwright 필수 Gate가 이
 // 계정으로 로그인을 여러 번(FE-BE-001~006 각 케이스), 이어서 auth-mandatory.js가 4회
@@ -23,15 +31,15 @@ import { ensureRunId, runStep, runPlaywrightSpec, runK6Scenario, runNodeScript, 
 // (용량 5 ÷ 분당 1 리필 = 5분) 대기한다.
 const AUTH_VALID_01_BUCKET_REFILL_WAIT_MS = 5 * 60 * 1000
 
-async function waitForAuthValid01BucketRefill(afterStepName) {
-  console.log(
-    `  ⏳ ${afterStepName}가 AUTH_VALID_01의 Rate Limit Bucket을 소진시켰을 수 있습니다 — ` +
-      `다음 단계가 잘못된 429로 실패하지 않도록 ${AUTH_VALID_01_BUCKET_REFILL_WAIT_MS / 1000}초 대기합니다.`,
-  )
-  await new Promise((r) => setTimeout(r, AUTH_VALID_01_BUCKET_REFILL_WAIT_MS))
+async function waitForAuthValid01BucketRefill(afterStepName, nextStepName) {
+  await waitForRateLimitRecovery({
+    label: `${afterStepName} 이후 AUTH_VALID_01 버킷`,
+    waitMs: AUTH_VALID_01_BUCKET_REFILL_WAIT_MS,
+    nextStep: nextStepName,
+  })
 }
 
-export async function runMandatoryGate() {
+export async function runMandatoryGate({ includeSummary = true } = {}) {
   const runId = ensureRunId()
   console.log(`필수 게이트 시작 (DORO_RUN_ID=${runId})`)
 
@@ -47,7 +55,7 @@ export async function runMandatoryGate() {
     await runStep('FE-BE-001~006,022 (Playwright 필수 Gate)', () => runPlaywrightSpec('tests/fe-be-mandatory.spec.ts')),
   )
 
-  await waitForAuthValid01BucketRefill('FE-BE-001~006,022')
+  await waitForAuthValid01BucketRefill('FE-BE-001~006,022', 'AUTH-001~004,010,020~024')
 
   steps.push(
     await runStep('AUTH-001~004,010,020~024 (k6 auth-mandatory)', () =>
@@ -73,7 +81,7 @@ export async function runMandatoryGate() {
     ),
   )
 
-  await waitForAuthValid01BucketRefill('AUTH-001~004,010,020~024')
+  await waitForAuthValid01BucketRefill('AUTH-001~004,010,020~024', 'SESS-001~003,006,007')
 
   steps.push(
     await runStep('SESS-001~003,006,007 (+004/005 조건부) (k6 session-flow)', () =>
@@ -105,7 +113,7 @@ export async function runMandatoryGate() {
   )
 
   if (process.env.RUN_DESTRUCTIVE_CATALOG_TESTS === 'true') {
-    await waitForAuthValid01BucketRefill('SESS-001~007 및 QUEUE-001~003')
+    await waitForAuthValid01BucketRefill('SESS-001~007 및 QUEUE-001~003', 'CATALOG-001~006')
   }
 
   steps.push(
@@ -123,7 +131,7 @@ export async function runMandatoryGate() {
   // 2를 쓴 상태다. 어느 경우든 여기서 5분을 대기해 Bucket을 다시 5로 채운 뒤 이 새 단계가 1만 쓰고
   // 끝나는 것으로 예산 계산을 리셋한다. 이 단계 뒤에 다시 공유 계정을 쓰는 단계를 추가하려면
   // 이 주석과 api/README.md의 "⚠️ 계정 Rate Limit Bucket 주의" 표를 함께 갱신할 것.
-  await waitForAuthValid01BucketRefill('CATALOG-001~003')
+  await waitForAuthValid01BucketRefill('CATALOG-001~003', 'AUDIT-001, SALES-001')
 
   steps.push(
     // SALES-001은 mandatoryIds에서 뺐다 — audit-sales-connectivity.js의 isNearKstMidnight()가
@@ -142,15 +150,17 @@ export async function runMandatoryGate() {
 
   steps.push(
     await runStep('OPS-004 (TLS·CloudFront→ALB 경로, 비파괴 관찰)', () =>
-      runNodeScript('scripts/verify-edge-boundary.mjs'),
+      runNodeScript('scripts/gates/verify-edge-boundary.mjs'),
     ),
   )
 
-  steps.push(
-    await runStep('종합 판정 (build-combined-summary)', () =>
-      runNodeScript('scripts/build-combined-summary.mjs', [runId]),
-    ),
-  )
+  if (includeSummary) {
+    steps.push(
+      await runStep('종합 판정 (build-combined-summary)', () =>
+        runNodeScript('scripts/reporting/build-combined-summary.mjs', [runId]),
+      ),
+    )
+  }
 
   return steps
 }

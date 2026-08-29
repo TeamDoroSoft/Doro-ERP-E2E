@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const BROWSER_DIR = resolve(REPO_ROOT, 'browser')
 export const REPORTS_DIR = resolve(REPO_ROOT, 'reports')
+const PLAYWRIGHT_CLI = resolve(BROWSER_DIR, 'node_modules', '@playwright', 'test', 'cli.js')
 
 // UTC+9(Asia/Seoul, DST 없음) 고정 오프셋으로 KST 벽시계 값을 얻는다 — 이 매장/서비스 시간대
 // 전제를 쓰는 다른 코드(queue-connectivity.js의 storeNow() 등)와 같은 트릭이다. Node에는
@@ -61,6 +62,27 @@ export async function runStep(name, fn) {
   }
 }
 
+// 계정 Rate Limit Bucket 회복은 의도된 대기다. 긴 대기 중에도 "멈춤"으로 오해하지 않도록
+// 주기적으로 남은 시간과 다음 단계를 출력한다. intervalMs는 단위 테스트에서 짧게 지정할 수 있다.
+export async function waitForRateLimitRecovery({ label, waitMs, nextStep, intervalMs = 30_000 }) {
+  const startedAt = Date.now()
+  const waitSeconds = Math.ceil(waitMs / 1000)
+  console.log('')
+  console.log(`  ⏳ [인증 버킷 회복 중] ${label}`)
+  console.log(`     테스트는 중단되지 않았습니다. Rate Limit 오탐을 막기 위해 약 ${waitSeconds}초 대기합니다.`)
+  console.log(`     다음 단계: ${nextStep}`)
+
+  while (true) {
+    const elapsedMs = Date.now() - startedAt
+    const remainingMs = Math.max(0, waitMs - elapsedMs)
+    if (remainingMs === 0) break
+    console.log(`     버킷 회복 중 · 남은 약 ${Math.ceil(remainingMs / 1000)}초`)
+    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remainingMs)))
+  }
+
+  console.log(`  ✓ [인증 버킷 회복 완료] 다음 단계로 진행합니다: ${nextStep}`)
+}
+
 export function guardFlag(envVarName, forWhat, howToEnable) {
   if (process.env[envVarName] === 'true') return true
   console.log(`  ⚠ ${envVarName}가 설정돼 있지 않습니다 — ${forWhat}는 이번 실행에서 SKIP됩니다.`)
@@ -68,18 +90,15 @@ export function guardFlag(envVarName, forWhat, howToEnable) {
   return false
 }
 
-export function runPlaywrightSpec(specFile) {
+export function runPlaywrightSpec(specFile, args = []) {
   try {
-    // Windows에서 npx는 .cmd/.ps1 셸 스크립트라 execFileSync가 셸 없이는 실행 파일을 찾지
-    // 못해 ENOENT를 던진다 — shell: true로 셸을 통해 실행한다. specFile은 항상 이 코드베이스
-    // 안에 하드코딩된 문자열 리터럴(예: 'tests/fe-be-mandatory.spec.ts')만 들어오고 외부/사용자
-    // 입력이 아니므로, Node가 띄우는 DEP0190(셸 모드 인자 이스케이프) 경고의 셸 인젝션 우려는
-    // 여기 해당하지 않는다.
-    execFileSync('npx', ['playwright', 'test', specFile], {
+    // npx.cmd를 shell:true로 실행하면 Windows cmd.exe가 --grep 정규식의 `|`를 파이프로
+    // 해석한다. 로컬 의존성의 CLI를 현재 Node로 직접 실행하면 그룹 정규식과 인자를 변형 없이
+    // 전달하고, 셸 실행도 제거할 수 있다.
+    execFileSync(process.execPath, [PLAYWRIGHT_CLI, 'test', specFile, ...args], {
       cwd: BROWSER_DIR,
       stdio: 'inherit',
       env: process.env,
-      shell: true,
     })
     return { ok: true, status: 0 }
   } catch (error) {

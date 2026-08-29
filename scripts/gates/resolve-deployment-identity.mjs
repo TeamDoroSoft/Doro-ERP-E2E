@@ -18,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const outPath = resolve(repoRoot, '.env.deployment-identity.local')
 
 const FRONTEND_DOMAIN = process.env.DORO_FRONTEND_DOMAIN || 'doro.minseok.click'
@@ -143,7 +143,7 @@ function main() {
   const { edge, storeAccess } = resolveGitOpsRevisions()
 
   const lines = [
-    '# scripts/resolve-deployment-identity.mjs가 생성 — 커밋 금지 (.env.*.local 패턴)',
+    '# scripts/gates/resolve-deployment-identity.mjs가 생성 — 커밋 금지 (.env.*.local 패턴)',
     `DORO_FRONTEND_REVISION=${frontendRevision}`,
     `DORO_CLOUDFRONT_DISTRIBUTION_ID=${distributionId}`,
     `DORO_EDGE_REVISION=${edge}`,

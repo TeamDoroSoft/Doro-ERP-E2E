@@ -40,6 +40,16 @@ function browserCounts(errors: BrowserErrors) {
   }
 }
 
+function sanitizedConsoleErrors(messages: string[]): string[] {
+  return messages.slice(0, 5).map((message) =>
+    message
+      .replace(/(?:https?|wss?):\/\/\S+/gi, '[URL]')
+      .replace(/\b(bearer|token|password|cookie|csrf|session|authorization)\b\s*[:=]?\s*[^\s,;]+/gi, '$1=[REDACTED]')
+      .replace(/[A-Za-z0-9_-]{24,}/g, '[REDACTED]')
+      .slice(0, 500),
+  )
+}
+
 function record(input: CaseResultInput) {
   appendCaseResult(currentRunId(), env, input)
 }
@@ -189,22 +199,28 @@ test('FE-BE-003 로그인 후 보호 화면 사용', async ({ page }) => {
 
   let loginResponse: Response | null = null
   let ordersResponse: Response | null = null
-  let transportError: string | null = null
-  try {
-    // 로그인 성공 직후 PosOrdersView가 onMounted에서 자동으로 쏘는 GET /api/v1/orders를
-    // 놓치지 않으려면, 클릭과 동시에 두 응답을 함께 기다려야 한다.
-    ;[loginResponse, ordersResponse] = await Promise.all([
-      page.waitForResponse(
-        (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/auth/login',
-      ),
-      page.waitForResponse(
-        (res) => res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/orders',
-      ),
-      page.locator('button.submit-button').click(),
-    ])
-  } catch (error) {
-    transportError = error instanceof Error ? error.message : String(error)
-  }
+  let ordersRequestSent = false
+  page.on('request', (request: Request) => {
+    if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/v1/orders') {
+      ordersRequestSent = true
+    }
+  })
+
+  // 로그인 성공 직후 PosOrdersView가 onMounted에서 자동으로 쏘는 GET /api/v1/orders를
+  // 놓치지 않으려면, 클릭 전에 두 대기를 모두 등록한다. Promise.all()을 쓰면 주문 응답
+  // timeout 하나가 로그인 응답까지 버려져 원인을 "요청 미발생"으로 잘못 기록하므로, 각 결과를
+  // 독립적으로 보존한다.
+  const [loginResult, ordersResult, clickResult] = await Promise.allSettled([
+    page.waitForResponse(
+      (res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/auth/login',
+    ),
+    page.waitForResponse(
+      (res) => res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/orders',
+    ),
+    page.locator('button.submit-button').click(),
+  ])
+  if (loginResult.status === 'fulfilled') loginResponse = loginResult.value
+  if (ordersResult.status === 'fulfilled') ordersResponse = ordersResult.value
 
   const loginOk = loginResponse?.status() === 200
   const ordersStatus = ordersResponse?.status() ?? 0
@@ -217,7 +233,20 @@ test('FE-BE-003 로그인 후 보호 화면 사용', async ({ page }) => {
     : false
 
   const pass = loginOk && ordersOk && screenOk
-  const resultCode = transportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_PROTECTED_FLOW'
+  const hasTransportError =
+    loginResult.status === 'rejected' || ordersResult.status === 'rejected' || clickResult.status === 'rejected'
+  const errorClass = pass
+    ? null
+    : loginResult.status === 'rejected'
+      ? 'UI_LOGIN_RESPONSE_NOT_RECEIVED'
+      : !loginOk
+        ? 'AUTH_LOGIN_FAILED'
+        : clickResult.status === 'rejected' || !ordersRequestSent
+          ? 'UI_API_REQUEST_NOT_SENT'
+          : ordersResult.status === 'rejected'
+            ? 'UI_API_RESPONSE_NOT_RECEIVED'
+            : 'UI_PROTECTED_API_FAILED'
+  const resultCode = hasTransportError ? 'ERROR_TRANSPORT' : pass ? 'PASS' : 'FAIL_PROTECTED_FLOW'
 
   record({
     testCaseId: 'FE-BE-003',
@@ -226,16 +255,27 @@ test('FE-BE-003 로그인 후 보호 화면 사용', async ({ page }) => {
     accountAlias: 'AUTH_VALID_01',
     resultCode,
     expected: { requestPath: '/api/v1/orders', protectedApiStatus: 200 },
-    observed: { protectedApiPath: ordersResponse ? new URL(ordersResponse.url()).pathname : undefined, protectedApiStatus: ordersStatus },
+    observed: {
+      loginStatus: loginResponse?.status() ?? 0,
+      protectedApiPath: ordersResponse ? new URL(ordersResponse.url()).pathname : undefined,
+      protectedApiStatus: ordersStatus,
+      protectedApiRequestSent: ordersRequestSent,
+    },
     requestId: ordersResponse?.headers()['x-request-id'] ?? '',
-    assertions: { loginSucceeded: !!loginOk, protectedApiSucceeded: ordersOk, protectedScreenVisible: screenOk },
+    assertions: {
+      loginSucceeded: !!loginOk,
+      protectedApiRequestSent: ordersRequestSent,
+      protectedApiSucceeded: ordersOk,
+      protectedScreenVisible: screenOk,
+    },
     browser: browserCounts(errors),
-    errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_PROTECTED_API_FAILED',
+    errorClass,
   })
 
   expect(
     pass,
-    `FE-BE-003 실패: loginOk=${loginOk} ordersStatus=${ordersStatus} screenOk=${screenOk} transportError=${transportError}`,
+    `FE-BE-003 실패: loginOk=${loginOk} ordersRequestSent=${ordersRequestSent} ordersStatus=${ordersStatus} ` +
+      `screenOk=${screenOk} errorClass=${errorClass}`,
   ).toBe(true)
 })
 
@@ -285,7 +325,20 @@ test('FE-BE-005 잘못된 비밀번호 1회', async ({ page }) => {
   const errors = trackBrowserErrors(page)
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
-  const account = env.authValid01
+  // AUTH_VALID_01은 FE-BE-002~004/006의 정상 로그인에 연속으로 쓰인다. 잘못된 비밀번호
+  // 요청까지 같은 (tenantCode, loginId) 버킷에 넣으면 정상 배포도 429로 오판할 수 있으므로,
+  // 별도 MANAGER 계정으로 실패 응답만 검증한다.
+  const account = env.staticAccounts.roleManager
+  if (!account) {
+    record({
+      testCaseId: 'FE-BE-005',
+      startedAt,
+      durationMs: 0,
+      resultCode: 'SKIP_PRECONDITION',
+      errorClass: 'AUTH_ROLE_MANAGER_01 정적 계정 없음 — FE-BE-005의 Rate Limit 격리 Fixture 준비 불가',
+    })
+    return
+  }
 
   await page.goto('/pos/login')
   await page.locator('input[name="tenantCode"]').fill(account.tenantCode)
@@ -313,7 +366,7 @@ test('FE-BE-005 잘못된 비밀번호 1회', async ({ page }) => {
     testCaseId: 'FE-BE-005',
     startedAt,
     durationMs: Date.now() - t0,
-    accountAlias: 'AUTH_VALID_01',
+    accountAlias: 'AUTH_ROLE_MANAGER_01',
     resultCode: pass ? 'PASS' : 'FAIL_UI',
     expected: { requestPath: '/api/v1/auth/login', httpStatus: 401, finalPath: '/pos/login' },
     observed: { httpStatus: status, finalPath: new URL(page.url()).pathname },
@@ -325,7 +378,7 @@ test('FE-BE-005 잘못된 비밀번호 1회', async ({ page }) => {
       noSessionCookieCreated: !sessionCookieCreated,
     },
     browser: browserCounts(errors),
-    errorClass: pass ? null : 'UI_ERROR_MESSAGE_MISMATCH',
+    errorClass: pass ? null : status === 429 ? 'AUTH_RATE_LIMITED' : 'UI_ERROR_MESSAGE_MISMATCH',
   })
 
   expect(
@@ -432,6 +485,15 @@ function isNearKstMidnight(): boolean {
 
 test('FE-BE-022 일별 매출 조회', async ({ page }) => {
   const errors = trackBrowserErrors(page)
+  const httpErrorPaths: string[] = []
+  const frontendOrigin = new URL(env.frontendOrigin).origin
+  page.on('response', (response: Response) => {
+    if (response.status() < 400) return
+    const url = new URL(response.url())
+    if (url.origin !== frontendOrigin) return
+    const path = `${response.status()} ${url.pathname}`
+    if (!httpErrorPaths.includes(path)) httpErrorPaths.push(path)
+  })
   const startedAt = new Date().toISOString()
   const t0 = Date.now()
 
@@ -558,7 +620,11 @@ test('FE-BE-022 일별 매출 조회', async ({ page }) => {
       salesTableVisible: tableVisible,
       salesRowsRendered: rowCount === 5,
     },
-    browser: browserCounts(errors),
+    browser: {
+      ...browserCounts(errors),
+      consoleErrors: sanitizedConsoleErrors(errors.consoleErrors),
+      httpErrorPaths: httpErrorPaths.slice(0, 10),
+    },
     errorClass: pass ? null : transportError ? 'UI_API_REQUEST_NOT_SENT' : 'UI_RESPONSE_MAPPING_FAILED',
   })
 

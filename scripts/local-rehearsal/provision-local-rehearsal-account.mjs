@@ -12,7 +12,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const stateFile = resolve(here, '..', '.env.local-rehearsal.local')
+const stateFile = resolve(here, '..', '..', '.env.local-rehearsal.local')
 
 const PROVISIONING_ORIGIN = process.env.PROVISIONING_ORIGIN ?? 'https://localhost:8081'
 const EDGE_ORIGIN = process.env.EDGE_ORIGIN ?? 'https://localhost:8080'
